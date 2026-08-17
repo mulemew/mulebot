@@ -534,3 +534,188 @@ test('a failed owner lookup degrades instead of throwing', async () => {
 
   await bot.shutdown();
 });
+
+// ---------------------------------------------------------------------------
+// expired interactions
+// ---------------------------------------------------------------------------
+//
+// Discord invalidates an interaction token three seconds after the user pressed
+// enter, whether or not this process was running during those three seconds. A
+// command that misses the window is not a broken command, and must not be
+// reported as one - there is nobody left to reply to, and the stack trace points
+// at the reply call rather than at the delay that caused it.
+
+function fakeBotForDispatch() {
+  const lines = [];
+  const record = (level) => (...args) => lines.push(`${level} ${args.map((a) => (a instanceof Error ? a.message : a)).join(' ')}`);
+  return {
+    lines,
+    counters: { commands: 0, interactions: 0, errors: 0 },
+    log: { warn: record('warn'), error: record('error'), debug: () => {}, info: () => {} },
+    cooldowns: { clear: () => {}, guard: () => 0, check: () => 0 },
+    config: { owners: [] },
+    applicationOwners: [],
+    isOwner: () => true,
+    db: { isBlacklisted: () => false, settings: () => ({}), recordCommand: () => {}, stores: { guilds: { add: () => {} } } },
+    features: {},
+    components: { dispatch: async () => true },
+    featureEnabled: () => true,
+    t: () => (k) => k,
+  };
+}
+
+function apiError(code) {
+  const e = new Error(code === 10062 ? 'Unknown interaction' : 'Interaction has already been acknowledged');
+  e.code = code;
+  return e;
+}
+
+test('an expired interaction is reported as a delay, not as a command failure', async () => {
+  const handler = require('../src/events/interactionCreate');
+  const bot = fakeBotForDispatch();
+
+  let replied = false;
+  const thrower = apiError(10062);
+  bot.registry = {
+    get: () => ({
+      data: { name: 'game' },
+      userPerms: [],
+      botPerms: [],
+      cooldown: 0,
+      uses: 0,
+      execute: async () => {
+        throw thrower;
+      },
+    }),
+  };
+
+  // 2.9s of the budget gone before the handler ran: the delay is upstream.
+  const interaction = {
+    createdTimestamp: Date.now() - 2900,
+    user: { id: '1', tag: 'a#1' },
+    guildId: null,
+    channelId: 'c',
+    commandName: 'game',
+    isAutocomplete: () => false,
+    isButton: () => false,
+    isAnySelectMenu: () => false,
+    isModalSubmit: () => false,
+    isChatInputCommand: () => true,
+    inGuild: () => false,
+    reply: async () => {
+      replied = true;
+    },
+    followUp: async () => {
+      replied = true;
+    },
+    replied: false,
+    deferred: false,
+  };
+
+  await handler.execute(bot, interaction);
+
+  assert.equal(replied, false, 'nothing is sent to an interaction Discord has already discarded');
+  assert.equal(bot.lines.filter((l) => l.startsWith('error')).length, 0, 'no stack trace is logged');
+
+  const warned = bot.lines.join('\n');
+  assert.match(warned, /already expired/);
+  assert.match(warned, /before the handler started/, 'the split between queued and handler time is reported');
+  assert.match(warned, /stalled or the\s+gateway lagging/, 'a 2.9s pre-handler delay is blamed upstream, not on the command');
+  assert.equal(bot.counters.errors, 1);
+});
+
+test('a slow command is blamed on the command, not on the host', async () => {
+  const handler = require('../src/events/interactionCreate');
+  const bot = fakeBotForDispatch();
+
+  bot.registry = {
+    get: () => ({
+      data: { name: 'slow' },
+      userPerms: [],
+      botPerms: [],
+      cooldown: 0,
+      uses: 0,
+      execute: async () => {
+        throw apiError(10062);
+      },
+    }),
+  };
+
+  const interaction = {
+    createdTimestamp: Date.now(), // arrived instantly; whatever took 3s is ours
+    user: { id: '1', tag: 'a#1' },
+    guildId: null,
+    channelId: 'c',
+    commandName: 'slow',
+    isAutocomplete: () => false,
+    isButton: () => false,
+    isAnySelectMenu: () => false,
+    isModalSubmit: () => false,
+    isChatInputCommand: () => true,
+    inGuild: () => false,
+    reply: async () => {},
+    followUp: async () => {},
+    replied: false,
+    deferred: false,
+  };
+
+  await handler.execute(bot, interaction);
+  assert.match(bot.lines.join('\n'), /should defer before doing work/);
+});
+
+test('a double-answered interaction names the likely cause', async () => {
+  const handler = require('../src/events/interactionCreate');
+  const bot = fakeBotForDispatch();
+
+  bot.registry = {
+    get: () => ({
+      data: { name: 'ping' },
+      userPerms: [],
+      botPerms: [],
+      cooldown: 0,
+      uses: 0,
+      execute: async () => {
+        throw apiError(40060);
+      },
+    }),
+  };
+
+  const interaction = {
+    createdTimestamp: Date.now(),
+    user: { id: '1', tag: 'a#1' },
+    guildId: null,
+    channelId: 'c',
+    commandName: 'ping',
+    isAutocomplete: () => false,
+    isButton: () => false,
+    isAnySelectMenu: () => false,
+    isModalSubmit: () => false,
+    isChatInputCommand: () => true,
+    inGuild: () => false,
+    reply: async () => {},
+    followUp: async () => {},
+    replied: false,
+    deferred: false,
+  };
+
+  await handler.execute(bot, interaction);
+  assert.match(bot.lines.join('\n'), /second copy of the bot is running on the same token/);
+});
+
+test('the event loop sampler records the worst stall it sees', async () => {
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  process.env.PLUGINS_DIR = tempDir('lag-p-');
+  process.env.DATA_DIR = tempDir('lag-d-');
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+
+  assert.equal(bot.lagPeak, 0, 'a healthy process reports no stall');
+  assert.equal(bot.snapshot().lagPeakMs, 0, '/owner stats reads the same number');
+
+  await bot.shutdown();
+});

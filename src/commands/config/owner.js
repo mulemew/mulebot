@@ -90,6 +90,9 @@ const owner = {
                     `Uptime: ${formatDuration(s.uptimeMs, { parts: 3 })}`,
                     `Node ${s.node} · discord.js v${s.djs}`,
                     `RSS ${s.memoryMb}MB · heap ${s.heapMb}MB`,
+                    // Anything approaching 3000ms is the reason commands
+                    // intermittently answer with "This interaction failed".
+                    `Worst stall: ${s.lagPeakMs}ms${s.lagPeakMs >= 1000 ? ' ⚠️' : ''}`,
                     `PID ${process.pid} on ${process.platform}`,
                   ].join('\n'),
                 },

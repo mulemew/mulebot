@@ -478,3 +478,46 @@ moderation history. Nothing else in the tree is stateful.
 
 Upgrading is `git pull && npm install && restart` — settings merge over defaults
 on read, so there is no migration step.
+
+## Troubleshooting
+
+### "This interaction failed"
+
+Discord invalidates an interaction three seconds after the user pressed enter,
+and that clock does not stop while the process is busy or paused. So this
+message usually says nothing about the command — it says the process was not
+running during those three seconds. The log distinguishes the two cases:
+
+```
+/game could not answer: Discord had already expired the interaction.
+2907ms passed before the handler started, 41ms inside it.
+```
+
+Nearly all of the budget gone before the handler started means the delay is
+upstream of any command code. Look for the companion warning:
+
+```
+the process was unresponsive for 2400ms
+```
+
+Common causes, in the order worth checking:
+
+1. **`--max-old-space-size` not set on a memory-limited host.** V8 sizes its
+   heap from *host* RAM, so in a 256 MB container it plans for gigabytes and
+   does not collect until far past what the container has. The bot prints the
+   exact flag to use at boot; that warning is not decorative.
+2. **A free tier that idles the container.** The first command after a quiet
+   period pays for the wake-up. Nothing in the bot can fix this.
+3. **A shared vCPU out of burst credit.**
+
+`/owner stats` reports the worst stall since boot. Anything approaching 3000 ms
+there means commands will fail intermittently no matter what they do.
+
+### Every command answers twice, or logs "already answered by somebody else"
+
+Two copies of the bot are running on the same token — commonly an old container
+that was never stopped, or a local `node index.js` left over from testing. One
+token, one process.
+
+Several *different* bots in the same server is fine and unrelated: each is its
+own application with its own token, and Discord keeps their commands apart.

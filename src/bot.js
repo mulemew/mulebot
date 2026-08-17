@@ -56,6 +56,9 @@ class Bot {
      * Empty until the gateway is ready.
      */
     this.applicationOwners = [];
+
+    /** Worst event-loop stall seen so far, in ms. Reported by /botinfo. */
+    this.lagPeak = 0;
   }
 
   // ---------- construction ----------
@@ -165,6 +168,30 @@ class Bot {
 
     this.backupTimer = setInterval(() => this.db.backupAll(), 6 * 60 * 60 * 1000);
     if (typeof this.backupTimer.unref === 'function') this.backupTimer.unref();
+
+    // Event-loop lag sampler.
+    //
+    // Discord expires an interaction token three seconds after the user pressed
+    // enter, and that clock does not stop while this process is busy or paused.
+    // So a host that freezes the container, throttles a burst-credit CPU to
+    // nothing, or lets V8 stall in GC produces "This interaction failed" for a
+    // command that is itself instant - and no amount of reading the command's
+    // code explains it. One number in the log does.
+    const LAG_SAMPLE_MS = 5000;
+    let lastSample = Date.now();
+    this.lagTimer = setInterval(() => {
+      const now = Date.now();
+      const lag = now - lastSample - LAG_SAMPLE_MS;
+      lastSample = now;
+      this.lagPeak = Math.max(this.lagPeak, lag);
+      if (lag >= 1000) {
+        this.log.warn(
+          `the process was unresponsive for ${lag}ms — commands that arrive during a stall this long ` +
+            "miss Discord's 3s reply window and fail with 'Unknown interaction'",
+        );
+      }
+    }, LAG_SAMPLE_MS);
+    if (typeof this.lagTimer.unref === 'function') this.lagTimer.unref();
 
     this.scheduler.start();
     this.log.info('initialisation complete');
@@ -611,6 +638,7 @@ class Bot {
       cacheProfile: this.cacheProfile?.profile || 'unknown',
       caches: cacheProfiles.snapshot(this.client),
       memoryLimitMb: this.cacheProfile?.detectedLimitMb || null,
+      lagPeakMs: this.lagPeak,
     };
   }
 
@@ -621,6 +649,7 @@ class Bot {
     this.cooldowns.stop();
     clearInterval(this.saveTimer);
     clearInterval(this.backupTimer);
+    clearInterval(this.lagTimer);
 
     // Plugins first: one of them may be holding a port that a supervisor is
     // about to hand to the replacement process.

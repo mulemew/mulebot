@@ -60,6 +60,25 @@ module.exports = {
         }
       } catch (e) {
         bot.counters.errors++;
+
+        // Same two "the interaction is gone" cases as commands below. Buttons
+        // hit them more often, because a game board sits there being clickable
+        // long after the process has started struggling.
+        if (e?.code === 10062) {
+          bot.log.warn(
+            `component "${interaction.customId}" could not answer: Discord had already expired the ` +
+              `interaction, ${Date.now() - interaction.createdTimestamp}ms after it was created`,
+          );
+          return;
+        }
+        if (e?.code === 40060) {
+          bot.log.warn(
+            `component "${interaction.customId}" was already answered by somebody else — ` +
+              'that normally means a second copy of the bot is running on the same token',
+          );
+          return;
+        }
+
         bot.log.error(`component "${interaction.customId}" threw:`, e);
         const payload = { content: `That control failed: ${e.message}`, flags: MessageFlags.Ephemeral };
         if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
@@ -207,10 +226,42 @@ module.exports = {
       bot.features.logging?.commandUsed?.(interaction, command, took);
     } catch (e) {
       bot.counters.errors++;
-      bot.log.error(`/${command.data.name} threw:`, e);
 
       // A command that failed should not hold the user's cooldown hostage.
       bot.cooldowns.clear(interaction.user.id, command.data.name);
+
+      // Two API errors mean the interaction itself is gone rather than the
+      // command being broken. A stack trace for either is noise, and there is
+      // nobody left to apologise to, so both return early.
+      if (e?.code === 10062) {
+        // Discord expires an interaction token three seconds after the user
+        // pressed enter. That clock starts before the event reaches this
+        // process, so the useful question is where the three seconds went.
+        const queued = started - interaction.createdTimestamp;
+        const total = Date.now() - interaction.createdTimestamp;
+        bot.log.warn(
+          `/${command.data.name} could not answer: Discord had already expired the interaction. ` +
+            `${queued}ms passed before the handler started, ${total - queued}ms inside it.`,
+        );
+        bot.log.warn(
+          queued > 2000
+            ? '  the delay is before any command code runs, so this is the process being stalled or the ' +
+                'gateway lagging — check for "the process was unresponsive" warnings, and make sure ' +
+                '--max-old-space-size is set if this host is memory-limited'
+            : `  the command itself was too slow (${total - queued}ms); it should defer before doing work`,
+        );
+        return;
+      }
+
+      if (e?.code === 40060) {
+        bot.log.warn(
+          `/${command.data.name}: this interaction was already answered by somebody else. ` +
+            'That normally means a second copy of the bot is running on the same token.',
+        );
+        return;
+      }
+
+      bot.log.error(`/${command.data.name} threw:`, e);
 
       const payload = {
         content: t('err.generic', { error: e.message || 'unknown error' }),
