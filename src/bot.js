@@ -412,6 +412,27 @@ class Bot {
         }
         const took = Date.now() - started;
 
+        // Guild and global registrations are independent sets, and Discord shows
+        // both. A bot that once registered globally and now registers per guild
+        // therefore ends up listing every command twice, as the old global set
+        // finishes propagating - which looks like a bug in the bot and cannot be
+        // fixed by restarting, because nothing ever removes the old set.
+        //
+        // Clearing it here is safe: the guild registrations above already cover
+        // every server the bot is in.
+        try {
+          const globals = await rest.get(Routes.applicationCommands(appId));
+          if (Array.isArray(globals) && globals.length) {
+            await rest.put(Routes.applicationCommands(appId), { body: [] });
+            this.log.info(
+              `removed ${globals.length} stale global command(s) left by an earlier run; ` +
+                'they would otherwise have appeared as duplicates',
+            );
+          }
+        } catch (e) {
+          this.log.debug(`could not check for stale global commands: ${e.message}`);
+        }
+
         if (this.config.guildId) {
           this.log.info(`registered ${body.length} command(s) to guild ${this.config.guildId} in ${took}ms (instant)`);
         } else {

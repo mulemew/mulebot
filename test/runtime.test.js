@@ -314,13 +314,19 @@ test('command registration targets the servers the bot is actually in', async ()
     Object.defineProperty(bot.client, 'user', { value: { id: 'app' }, configurable: true });
 
     const routes = [];
-    const original = discord.REST.prototype.put;
+    const originalPut = discord.REST.prototype.put;
+    const originalGet = discord.REST.prototype.get;
     discord.REST.prototype.put = async function put(route) {
       routes.push(route);
     };
+    // No stale global commands in these cases.
+    discord.REST.prototype.get = async function get() {
+      return [];
+    };
 
     const result = await bot.registerCommands();
-    discord.REST.prototype.put = original;
+    discord.REST.prototype.put = originalPut;
+    discord.REST.prototype.get = originalGet;
 
     assert.equal(result.scope, testCase.expect, `${testCase.label}: expected ${testCase.expect} scope`);
     assert.equal(routes.length, testCase.calls, `${testCase.label}: expected ${testCase.calls} REST call(s)`);
@@ -332,4 +338,50 @@ test('command registration targets the servers the bot is actually in', async ()
   }
 
   delete process.env.GUILD_ID;
+});
+
+test('a stale global registration is cleared when registering per guild', async () => {
+  // Guild and global command sets are independent and Discord shows both. A bot
+  // that once registered globally and now registers per guild would list every
+  // command twice as the old global set finished propagating — which looks like
+  // a bug and no restart fixes, because nothing removes the old set.
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  process.env.GUILD_ID = '';
+  process.env.PLUGINS_DIR = tempDir('stale-p-');
+  process.env.DATA_DIR = tempDir('stale-d-');
+  process.env.LOG_LEVEL = 'silent';
+  delete process.env.REGISTER_COMMANDS;
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+  bot.client.guilds.cache.set('111', { id: '111', name: 'server' });
+  Object.defineProperty(bot.client, 'user', { value: { id: 'app' }, configurable: true });
+
+  const puts = [];
+  const originalPut = discord.REST.prototype.put;
+  const originalGet = discord.REST.prototype.get;
+
+  discord.REST.prototype.put = async function put(route, options) {
+    puts.push({ route, count: options?.body?.length ?? 0 });
+  };
+  // Pretend an earlier run left a full global set behind.
+  discord.REST.prototype.get = async function get() {
+    return Array.from({ length: 73 }, (_, i) => ({ name: `cmd${i}` }));
+  };
+
+  await bot.registerCommands();
+
+  discord.REST.prototype.put = originalPut;
+  discord.REST.prototype.get = originalGet;
+  await bot.shutdown();
+
+  const guildPut = puts.find((p) => p.route.includes('/guilds/'));
+  const globalPut = puts.find((p) => !p.route.includes('/guilds/'));
+
+  assert.ok(guildPut, 'commands should be registered to the guild');
+  assert.ok(guildPut.count > 0, 'the guild registration should carry the command set');
+  assert.ok(globalPut, 'the stale global set should have been cleared');
+  assert.equal(globalPut.count, 0, 'clearing means an empty body, not a re-register');
 });
