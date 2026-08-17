@@ -654,6 +654,49 @@ test('the web panel stores a verifier, not the secret, and issues sessions', asy
   assert.equal((await call('/api/state', { bearer: session })).status, 401, 'logout must invalidate the session');
 });
 
+test('the web panel stays on localhost even when the platform sets PORT', async (t) => {
+  // httpserver deliberately opens up when a PaaS injects PORT, because its
+  // health check comes from outside the container. The panel must NOT copy that:
+  // exposing a status page by accident is untidy, exposing a code execution
+  // endpoint by accident is a compromise.
+  const dir = tempDir('bot-plugins-');
+  const panelPort = takePort();
+  const injected = takePort();
+
+  fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));
+  fs.copyFileSync(path.join(ROOT, 'plugins', 'httpserver.js'), path.join(dir, 'httpserver.js'));
+  fs.writeFileSync(
+    path.join(dir, 'plugins.json'),
+    // No "host" given for either, so each falls back to its own default.
+    JSON.stringify({ config: { webpanel: { token: 'a-plaintext-token-long-enough', port: panelPort } } }),
+  );
+
+  process.env.PORT = String(injected);
+  const bot = await boot(dir);
+  t.after(async () => {
+    delete process.env.PORT;
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await new Promise((r) => setTimeout(r, 400));
+
+  const addressOf = (name) => {
+    const owned = bot.plugins.get(name)?.context?.owned?.resources || [];
+    const entry = owned.find((r) => typeof r.resource?.address === 'function' && r.resource.address());
+    return entry ? entry.resource.address() : null;
+  };
+
+  const panel = addressOf('webpanel');
+  assert.ok(panel, 'the panel should be listening');
+  assert.equal(panel.address, '127.0.0.1', 'the panel must stay on localhost despite PORT being set');
+  assert.equal(panel.port, panelPort, 'and must not adopt the injected port');
+
+  const status = addressOf('httpserver');
+  assert.ok(status, 'the status endpoint should be listening');
+  assert.equal(status.address, '0.0.0.0', 'httpserver should open up for the platform health check');
+  assert.equal(status.port, injected, 'and adopt the injected port');
+});
+
 test('the web panel refuses to start without a usable credential', async (t) => {
   const dir = tempDir('bot-plugins-');
   fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));

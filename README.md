@@ -106,54 +106,28 @@ admin runs `/config`.
 
 ## Plugins
 
-Drop a `.js` file into `plugins/` and it loads on the next start, or right away
-with `/plugin scan`. Three bundled examples: `httpserver.js` (a standalone script
-that starts a status endpoint), `hello.js` (the full contract) and `webpanel.js`
-(a browser UI, off until you give it a token).
-
-A plugin can be a plain script with no exports — it just runs:
+Drop a `.js` file into `plugins/` and it loads. It can be a plain standalone
+script — no exports, no contract — or export `init(plugin)` for slash commands,
+buttons, gateway listeners, scheduled tasks and persistent storage.
 
 ```js
-// plugins/ticker.js
+// plugins/ticker.js — a complete, working plugin
 setInterval(() => console.log('tick'), 60_000);
 ```
 
-…or export `init(plugin)` to register slash commands, buttons, gateway
-listeners, scheduled tasks and persistent storage.
+Timers and servers a plugin creates are tracked and released when it unloads, so
+a plugin that opens a port needs no cleanup code. Install from a file, a URL or a
+`.zip`, and manage it all from Discord with `/plugin` — no port and no separate
+credential, since the owner-only check is the authentication.
 
-Plugin files are compiled with extra parameters shadowing the globals in their
-scope, so **timers and servers are tracked automatically**:
+**Plugins run with the bot's full privileges**, so installing one is as
+consequential as editing the bot's source. Set `PLUGINS_ENABLED=false` where that
+is not acceptable.
 
-```js
-const server = require('http').createServer(handler);
-server.listen(3000);          // /plugin unload closes this port. No cleanup code.
-```
+📖 **Everything else is in [`plugins/README.md`](plugins/README.md)** — the
+context API, dependency handling, persistence modes, native addons, the web
+panel and its credential scheme.
 
-Manage them from Discord — no port, no token, no web endpoint. `/plugin` is
-owner-only, so Discord's own identity is the authentication:
-
-```
-/plugin upload   file:<attach a .js or .zip>   install from an attachment
-/plugin install  url:<...> mode:<persist|once|memory>
-/plugin npm      package:axios                 install a dependency
-/plugin list · info · load · unload · reload · delete · source · scan · watch
-```
-
-Commands a plugin adds or removes are re-registered with Discord automatically.
-The bundled `webpanel` plugin offers the same operations as a web page, for when
-a browser is easier than a chat client — but it needs a port and a token, so
-Discord is the safer default.
-
-`.node` / `.so` native addons load via `process.dlopen` — they must be real Node
-(N-API) addons matching this ABI, platform and architecture, and they cannot be
-unloaded because Node exposes no `dlclose`. All of that is reported explicitly
-rather than as a raw dlopen error.
-
-**Plugins run with the bot's full privileges.** The compile wrapper exists for
-clean unloading, not isolation. Set `PLUGINS_ENABLED=false` where that is not
-acceptable. Full details in [`plugins/README.md`](plugins/README.md).
-
----
 
 ## Resource usage
 
