@@ -4,7 +4,7 @@ A modular Discord bot: moderation with a case log, automod, levelling, an
 economy, ten interactive games, tickets, giveaways, a starboard, reaction roles
 and server automation.
 
-**72 slash commands, one runtime dependency (`discord.js`), no database server.**
+**74 slash commands, one runtime dependency (`discord.js`), no database server.**
 
 ```bash
 npm install
@@ -13,6 +13,38 @@ node index.js
 
 The first run prompts for a bot token and offers to save it to `.env`. On a
 hosting panel, set `DISCORD_TOKEN` as a startup variable instead.
+
+---
+
+## Minimum configuration
+
+`.env.example` lists 44 environment variables. **You need one, or three on a
+small host.** Everything else has a working default, and all per-server
+behaviour is configured inside Discord with `/config` — not with environment
+variables.
+
+| Host | What to set |
+|---|---|
+| Anything with ≥ 1 GB | `DISCORD_TOKEN` |
+| **256–512 MB** | `DISCORD_TOKEN`, `MEMORY_PROFILE=low`, and `NODE_OPTIONS=--max-old-space-size=140` |
+
+```bash
+cp deploy/env.256mb.example .env    # a ready-made 256 MB config; paste your token
+```
+
+`MEMORY_PROFILE=low` caps the discord.js caches, which are the only thing that
+grows without bound. `NODE_OPTIONS` caps the V8 heap and **cannot live in
+`.env`** — Node reads it before any code runs. The bot detects when it is
+missing and prints the exact value to use.
+
+Two more worth knowing about, neither required:
+
+- `GUILD_ID` — while setting up, registers commands to one server so they appear
+  instantly instead of taking up to an hour.
+- `OWNER_IDS` — your Discord user ID; `/owner` and `/plugin` need it.
+
+The remaining ~38 are operational knobs (cache and log tuning, feature switches,
+embed colours). They exist for the cases that need them; ignore them otherwise.
 
 ---
 
@@ -245,9 +277,22 @@ Discord's side, so the bot would have to reimplement it.
 
 ## Configuration
 
-Only `DISCORD_TOKEN` is required. See `.env.example` for the full list —
-registration scope, log level, data directory, feature master switches and
-appearance.
+See [Minimum configuration](#minimum-configuration) above for the short answer,
+and `.env.example` for all 44 variables with their defaults. They fall into
+tiers:
+
+| | Variables | When you need them |
+|---|---|---|
+| **Required** | `DISCORD_TOKEN` | always |
+| **Small hosts** | `MEMORY_PROFILE`, `NODE_OPTIONS` | under ~512 MB |
+| **Useful** | `GUILD_ID`, `OWNER_IDS`, `LOG_LEVEL`, `LOG_FILE`, `DATA_DIR` | setup, debugging, volumes |
+| **Knobs** | `SAVE_INTERVAL`, `BACKUP_COUNT`, `SCHEDULER_TICK`, `REGISTER_COMMANDS`, `PLUGIN_*` | tuning, development |
+| **Cosmetic** | `EMBED_COLOR*`, `ACTIVITY*`, `STATUS`, `PREFIX`, `BOT_LANG`, `WELCOME_CHANNEL` | rebranding; most are also per-server via `/config` |
+| **Feature switches** | 11 × `FEATURE_*` | removing a whole feature globally |
+| **Plugin-owned** | `PORT`, `WEBPANEL_TOKEN`, `WEBPANEL_PORT` | read by bundled plugins, not the bot |
+
+The bottom four tiers are there for the deployments that need them. A normal
+install touches none of them.
 
 Per-server behaviour is configured in Discord:
 
