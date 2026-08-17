@@ -373,10 +373,17 @@ connects — which is exactly what a health check should see during startup.
 
 Two things that do matter on every platform:
 
-**The filesystem is usually ephemeral.** `data/` holds every server's settings,
-member records and moderation history. Without a persistent volume it is wiped on
-every redeploy. Mount one at `/app/data`. This is the most common way to lose a
-server's configuration.
+**The filesystem is usually ephemeral, and often read-only.** `data/` holds every
+server's settings, member records and moderation history. Without a persistent
+volume it is wiped on every redeploy — the most common way to lose a server's
+configuration. Mount one at `/app/data`.
+
+If the filesystem is read-only with only `/tmp` writable, the bot checks at
+startup and refuses to run rather than quietly writing somewhere that will not
+survive. Either mount a volume, or set `DATA_DIR=/tmp/mulebot` to say explicitly
+that you accept losing everything on restart. Plugin installs are treated
+differently: they fall back to a scratch directory automatically, because that
+code can be fetched again — and every install reports when it did so.
 
 **Set the heap ceiling to match the plan.** Add
 `NODE_OPTIONS=--max-old-space-size=<≈55% of plan RAM>`; the Dockerfile's default

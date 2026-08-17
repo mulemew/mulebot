@@ -385,3 +385,70 @@ test('a stale global registration is cleared when registering per guild', async 
   assert.ok(globalPut, 'the stale global set should have been cleared');
   assert.equal(globalPut.count, 0, 'clearing means an empty body, not a re-register');
 });
+
+// ---------------------------------------------------------------------------
+test('a read-only data directory fails loudly instead of relocating', async () => {
+  // Containers are increasingly read-only with only /tmp writable. Silently
+  // moving the data directory to /tmp would look like it worked and then lose
+  // every server's settings on the next restart, repeatedly, with no sign
+  // anything was wrong. So this one reports and stops.
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  const base = tempDir('ro-');
+  const blocked = path.join(base, 'blocked');
+  fs.writeFileSync(blocked, 'a file where a directory is wanted');
+
+  process.env.DATA_DIR = blocked;
+  process.env.PLUGINS_DIR = base;
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await assert.rejects(() => bot.init(), /not writable/, 'init must refuse to start');
+
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('a read-only plugins directory falls back, and says so', async () => {
+  // Unlike the data directory, relocating an install is reasonable: the code
+  // came from elsewhere and can be fetched again. The requirement is that the
+  // result reports it, so nobody is surprised when it is gone after a restart.
+  const writable = require('../src/core/writable');
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+  const http = require('node:http');
+
+  const base = tempDir('ro2-');
+  const blocked = path.join(base, 'blocked');
+  fs.writeFileSync(blocked, 'not a directory');
+
+  assert.equal(writable.check(base).ok, true, 'a normal directory is writable');
+  assert.equal(writable.check(blocked).ok, false, 'a blocked path is not');
+
+  process.env.DATA_DIR = tempDir('ro2-d-');
+  process.env.PLUGINS_DIR = blocked;
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+
+  const port = 34_100 + (process.pid % 300);
+  const origin = http.createServer((q, s) => {
+    s.writeHead(200);
+    s.end("plugin.store.set('ok', 1);");
+  });
+  await new Promise((r) => origin.listen(port, '127.0.0.1', r));
+
+  const result = await bot.plugins.installFromUrl(`http://127.0.0.1:${port}/p.js`, { name: 'ro' });
+
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.temporary, true, 'the caller must be told the install is temporary');
+  assert.equal(bot.plugins.get('ro').state, 'loaded', 'and it must actually run');
+  assert.equal(fs.existsSync(path.join(blocked, 'ro.js')), false, 'nothing was written to the read-only path');
+
+  origin.close();
+  await bot.shutdown();
+  fs.rmSync(base, { recursive: true, force: true });
+});

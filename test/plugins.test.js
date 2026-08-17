@@ -613,6 +613,88 @@ test('httpserver adopts the port a platform injects', async (t) => {
   assert.equal(address.address, '0.0.0.0', 'and bind all interfaces so the health check can reach it');
 });
 
+test('archives support once mode, and refuse memory mode with a way forward', async (t) => {
+  // A bundle needs a real directory: relative require() resolves against it, and
+  // files like an index.html are read from it by path. So memory mode is refused
+  // — but "once" extracts, loads, then deletes, which leaves nothing on disk and
+  // is what people usually mean. It used to fall through to "persist" silently,
+  // so asking for a throwaway install quietly produced a permanent one.
+  const zlib = require('node:zlib');
+  const dir = tempDir('bot-plugins-');
+  const port = takePort();
+
+  const tar = (files) => {
+    const blocks = [];
+    for (const [name, content] of Object.entries(files)) {
+      const data = Buffer.from(content, 'utf8');
+      const h = Buffer.alloc(512);
+      h.write(name, 0, 100, 'utf8');
+      h.write('0000644\0', 100, 8, 'ascii');
+      h.write('0000000\0', 108, 8, 'ascii');
+      h.write('0000000\0', 116, 8, 'ascii');
+      h.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+      h.write('00000000000\0', 136, 12, 'ascii');
+      h.write('        ', 148, 8, 'ascii');
+      h.write('0', 156, 1, 'ascii');
+      h.write('ustar\0', 257, 6, 'ascii');
+      h.write('00', 263, 2, 'ascii');
+      let sum = 0;
+      for (const b of h) sum += b;
+      h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+      blocks.push(h, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+    }
+    blocks.push(Buffer.alloc(1024));
+    return zlib.gzipSync(Buffer.concat(blocks));
+  };
+
+  // The shape people actually ship: a manifest, an entry point, and an asset
+  // the entry point reads from its own directory.
+  const bundle = tar({
+    'pkg/package.json': JSON.stringify({ name: 'pkg', version: '1.0.0', main: 'index.js' }),
+    'pkg/index.js':
+      "const fs = require('node:fs'), path = require('node:path');" +
+      "plugin.store.set('html', fs.readFileSync(path.join(__dirname, 'page.html'), 'utf8').length);",
+    'pkg/page.html': '<h1>hello</h1>',
+  });
+
+  const origin = http.createServer((req, res) => {
+    if (req.url === '/b.tgz') {
+      res.writeHead(200);
+      res.end(bundle);
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((r) => origin.listen(port, '127.0.0.1', r));
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    origin.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const url = `http://127.0.0.1:${port}/b.tgz`;
+
+  await assert.rejects(
+    () => bot.plugins.installFromUrl(url, { mode: 'memory', name: 'mem' }),
+    /cannot run purely from memory/,
+    'an archive must not pretend to run from memory',
+  );
+
+  const once = await bot.plugins.installFromUrl(url, { mode: 'once', name: 'once' });
+  assert.equal(once.ok, true, once.error);
+  assert.equal(once.mode, 'once', 'it must report once, not silently persist');
+  assert.equal(fs.existsSync(path.join(dir, 'once')), false, 'the directory must be deleted after loading');
+  assert.equal(bot.plugins.get('once').state, 'loaded', 'but the plugin keeps running');
+  assert.equal(bot.plugins.get('once').ephemeral, true);
+  assert.equal(bot.plugins.readRemotes().once, undefined, 'once must not be remembered for refetching');
+
+  // A file read during load is already in memory and survives the deletion.
+  assert.equal(bot.plugins.get('once').context.store.get('html'), 14, 'the bundled asset was read at load time');
+});
+
 test('the bundled example plugins load and behave', async (t) => {
   // Runs against the real plugins/ directory, so a broken shipped example is
   // caught rather than shipped.

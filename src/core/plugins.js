@@ -1044,6 +1044,37 @@ class PluginHost {
     }
   }
 
+  // ---------- writability ----------
+
+  /**
+   * Where an install may write.
+   *
+   * Unlike the data directory, relocating a plugin install is a reasonable
+   * answer to a read-only filesystem: the code came from somewhere else and can
+   * be fetched again, so a scratch copy is a working install rather than
+   * silently discarded state. The one requirement is that it is *reported* —
+   * every caller surfaces `temporary: true` so nobody is surprised when the
+   * plugin is gone after a restart.
+   *
+   * @returns {{ dir: string, temporary: boolean }}
+   */
+  writableDir() {
+    if (this._writableDir) return this._writableDir;
+
+    const writable = require('./writable');
+    if (writable.isWritable(this.dir)) {
+      this._writableDir = { dir: this.dir, temporary: false };
+      return this._writableDir;
+    }
+
+    const scratch = writable.scratchDir('plugins');
+    this.log.warn(`${this.dir} is not writable, so installs go to ${scratch} instead`);
+    this.log.warn('plugins installed there work now but do not survive a restart.');
+    this.log.warn('to keep them, point PLUGINS_DIR at a writable path or mount a volume.');
+    this._writableDir = { dir: scratch, temporary: true };
+    return this._writableDir;
+  }
+
   // ---------- remote installation ----------
 
   /** The registry of plugins installed from a URL, kept in the data directory. */
@@ -1161,10 +1192,21 @@ class PluginHost {
     // ---- archive ----
     if (looksArchive) {
       if (mode === 'memory') {
-        throw new Error('an archive cannot be run from memory; it needs a directory. Use persist mode.');
+        // A bundle needs a real directory: relative require()s resolve against
+        // it, and files like an index.html are read from it by path. Faking that
+        // would mean a virtual filesystem, which is a lot of fragile machinery
+        // for a narrow case. "once" is the closest thing and is offered here so
+        // the answer is not simply "no".
+        throw new Error(
+          'an archive cannot run purely from memory: a bundle needs a real directory for relative ' +
+            'require() and for files it reads by path. Use mode "once" instead — it extracts, loads, ' +
+            'then deletes the files, so nothing is left on disk and it is gone after a restart. ' +
+            'Only a single .js file can run fully in memory.',
+        );
       }
       const archive = require('./archive');
-      const target = path.join(this.bot.config.pluginsDir, name);
+      const scratch = this.writableDir();
+      const target = path.join(scratch.dir, name);
       fs.rmSync(target, { recursive: true, force: true });
       fs.mkdirSync(target, { recursive: true });
 
@@ -1179,12 +1221,40 @@ class PluginHost {
 
       this.plugins.delete(name);
       const ok = await this.load({ name, file: resolved.file, kind: 'module', manifest: resolved.manifest });
+      const loaded = this.plugins.get(name);
+      if (loaded) loaded.origin = finalUrl;
+
+      if (mode === 'once') {
+        // Extracted, loaded, and now removed. The code stays live in this
+        // process; nothing survives a restart. Anything the plugin read during
+        // load is already in memory, but a file it opens lazily at request time
+        // will be gone - which is why this is documented rather than silent.
+        fs.rmSync(target, { recursive: true, force: true });
+        if (loaded) loaded.ephemeral = true;
+        this.log.info(`removed plugins/${name}/ from disk; it runs until the next restart`);
+        return {
+          ok,
+          name,
+          mode: 'once',
+          files: files.length,
+          error: loaded?.error?.message,
+          note: 'files deleted after loading',
+        };
+      }
+
       if (ok && opts.remember !== false) {
         const remotes = this.readRemotes();
         remotes[name] = { url: finalUrl, mode: 'persist', kind: 'archive', at: Date.now() };
         this.writeRemotes(remotes);
       }
-      return { ok, name, mode: 'persist', files: files.length, error: this.plugins.get(name)?.error?.message };
+      return {
+        ok,
+        name,
+        mode: 'persist',
+        files: files.length,
+        temporary: scratch.temporary,
+        error: loaded?.error?.message,
+      };
     }
 
     // ---- single script ----
@@ -1205,7 +1275,8 @@ class PluginHost {
       return { ok, name, mode: 'memory', error: this.plugins.get(name)?.error?.message };
     }
 
-    const file = path.join(this.bot.config.pluginsDir, `${name}.js`);
+    const scratch = this.writableDir();
+    const file = path.join(scratch.dir, `${name}.js`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, source, 'utf8');
 
@@ -1229,7 +1300,7 @@ class PluginHost {
       remotes[name] = { url: finalUrl, mode: 'persist', kind: 'script', at: Date.now() };
       this.writeRemotes(remotes);
     }
-    return { ok, name, mode: 'persist', error: plugin?.error?.message };
+    return { ok, name, mode: 'persist', temporary: scratch.temporary, error: plugin?.error?.message };
   }
 
   /**
@@ -1289,7 +1360,7 @@ class PluginHost {
     }
 
     if (isArchive) {
-      const target = path.join(this.bot.config.pluginsDir, derived);
+      const target = path.join(this.writableDir().dir, derived);
       fs.rmSync(target, { recursive: true, force: true });
       fs.mkdirSync(target, { recursive: true });
       const { files, stripped } = archive.extract(buffer, target);
@@ -1312,7 +1383,7 @@ class PluginHost {
       return { ok, name: derived, mode: 'memory', error: this.plugins.get(derived)?.error?.message };
     }
 
-    const file = path.join(this.bot.config.pluginsDir, `${derived}.js`);
+    const file = path.join(this.writableDir().dir, `${derived}.js`);
     fs.writeFileSync(file, source, 'utf8');
     this.plugins.delete(derived);
     const ok = await this.load({ name: derived, file, kind: 'script' });

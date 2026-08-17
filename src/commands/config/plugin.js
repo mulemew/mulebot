@@ -354,6 +354,10 @@ const plugin = {
             result.stripped ? `Stripped the \`${result.stripped}/\` wrapper.` : null,
             owned?.commands.length ? `Registered ${owned.commands.map((c) => `/${c}`).join(', ')}.` : null,
             mode === 'memory' ? '\n⚠️ Memory only — it disappears on the next restart.' : null,
+            result.temporary
+              ? '\n⚠️ The plugins directory is read-only, so this went to a temporary one. It works ' +
+                'now but is gone after a restart. Mount a volume or set `PLUGINS_DIR` to keep it.'
+              : null,
           ]
             .filter(Boolean)
             .join('\n'),
@@ -389,6 +393,10 @@ const plugin = {
           [
             `\`${result.name}\` is running.`,
             notes[result.mode || 'persist'],
+            result.temporary
+              ? '⚠️ The plugins directory is read-only, so this went to a temporary one. It works ' +
+                'now but is gone after a restart. Mount a volume or set `PLUGINS_DIR` to keep it.'
+              : null,
             result.files ? `Extracted ${result.files} file(s).` : null,
             owned?.commands.length ? `Registered ${owned.commands.map((c) => `/${c}`).join(', ')}.` : null,
           ]

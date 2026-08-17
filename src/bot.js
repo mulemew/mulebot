@@ -55,7 +55,16 @@ class Bot {
   // ---------- construction ----------
 
   async init() {
-    fs.mkdirSync(this.config.dataDir, { recursive: true });
+    // Checked before anything else: on a read-only filesystem this is the first
+    // thing that fails, and a raw EROFS from mkdir explains nothing.
+    const writable = require('./core/writable');
+    const dataCheck = writable.check(this.config.dataDir);
+    if (!dataCheck.ok) {
+      for (const line of writable.dataDirAdvice(this.config.dataDir, dataCheck)) {
+        this.log.fatal(line);
+      }
+      throw new Error(`data directory is not writable: ${this.config.dataDir}`);
+    }
 
     // Optional rotating log file. stdout stays the primary sink either way.
     if (this.config.logFile) {
