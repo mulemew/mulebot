@@ -1,0 +1,22 @@
+node_modules/
+
+# Secrets. .env.example is committed; .env is not.
+.env
+
+# Runtime data: guild settings, member records, cases, scheduled tasks.
+# Back these up, do not commit them.
+#
+# The leading slash matters: a bare "data/" also matches src/data/, which holds
+# the trivia bank, word lists and shop catalogue that the bot needs to run.
+/data/
+/data-test/
+/data-mem/
+/data-vps/
+/logs/
+
+# Legacy store from the pre-2.0 single-file version, imported on first run.
+/warns.json
+
+*.bak.*
+*.corrupt-*
+*.log

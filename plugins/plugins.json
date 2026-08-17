@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Optional. Delete this file and everything still works with defaults.",
+    "'disabled' lists plugin names (the filename without .js) to skip at boot.",
+    "'config' is handed to each plugin as plugin.config."
+  ],
+
+  "disabled": [],
+
+  "config": {
+    "httpserver": {
+      "port": 3000,
+      "host": "127.0.0.1"
+    }
+  }
+}

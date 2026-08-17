@@ -1,0 +1,11 @@
+node_modules
+data
+data-test
+data-mem
+logs
+.git
+.env
+*.log
+*.bak.*
+*.corrupt-*
+test

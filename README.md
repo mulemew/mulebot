@@ -1,0 +1,361 @@
+# Discord Bot
+
+A modular Discord bot: moderation with a case log, automod, levelling, an
+economy, ten interactive games, tickets, giveaways, a starboard, reaction roles
+and server automation.
+
+**72 slash commands, one runtime dependency (`discord.js`), no database server.**
+
+```bash
+npm install
+node index.js
+```
+
+The first run prompts for a bot token and offers to save it to `.env`. On a
+hosting panel, set `DISCORD_TOKEN` as a startup variable instead.
+
+---
+
+## Layout
+
+Entry point is `index.js`. Everything else lives under `src/`.
+
+```
+index.js                 boot, token resolution, intent-fallback login, graceful shutdown
+src/bot.js               the hub: owns every subsystem, passed to all code
+
+src/core/
+  config.js              environment configuration, read once
+  logger.js              levelled stdout logger with a ring buffer for /stats
+  store.js               crash-safe JSON store (atomic writes, debounce, backups)
+  db.js                  guild settings schema, member records, case log
+  scheduler.js           persistent timed tasks that survive restarts
+  registry.js            command loader/validator + component router
+  cooldowns.js           per-command cooldowns and a burst guard
+  context.js             the object every command receives
+  i18n.js                English and 简体中文 strings
+
+  plugins.js             plugin host: load, run, unload, hot-reload
+
+src/util/                time, text, random, embeds, perms, pager, components, mathexpr
+src/data/                trivia bank, word lists, shop items, job flavour, colours, codecs
+src/features/            18 features (automod, economy, leveling, tickets, …)
+src/games/               10 games + the session manager
+src/events/              gateway event handlers
+src/commands/            slash commands, grouped by category
+
+plugins/                 drop .js files here — see plugins/README.md
+test/                    47 tests: pure logic + plugin lifecycle
+```
+
+Run the tests with `npm test` (Node's built-in runner, no dev dependencies).
+
+---
+
+## What it does
+
+| Area | Commands |
+|---|---|
+| **Moderation** | `/kick` `/ban` `/softban` `/unban` `/timeout` `/untimeout` `/warn` `/purge` `/lock` `/unlock` `/slowmode` `/nick` `/role` `/case` `/note` `/modstats` |
+| **Automod** | `/automod` — 12 rules (invites, links, mentions, caps, spam, duplicates, word filter, emoji, zalgo, attachments, new accounts, walls) with per-rule actions and strike escalation |
+| **Levelling** | `/rank` `/profile` `/xp` `/leaderboard` — message and voice XP, role rewards, multipliers |
+| **Economy** | `/balance` `/daily` `/weekly` `/work` `/crime` `/rob` `/pay` `/bank` `/shop` `/buy` `/sell` `/inventory` `/use` |
+| **Games** | `/game` — tic-tac-toe, Connect Four, hangman, Wordle, minesweeper, blackjack, slots, trivia, rock-paper-scissors, guess-the-number |
+| **Utility** | `/help` `/ping` `/botinfo` `/stats` `/avatar` `/userinfo` `/serverinfo` `/roleinfo` `/channelinfo` `/emoji` `/math` `/encode` `/decode` `/color` `/timestamp` `/poll` `/remind` `/afk` `/todo` `/birthday` `/snipe` `/tag` `/say` |
+| **Fun** | `/roll` `/pick` `/8ball` `/fun` `/ship` |
+| **Server features** | `/giveaway` `/ticket` `/reactionrole` `/starboard` `/autoresponder` `/suggest` `/suggestion` |
+| **Setup** | `/config` — 12 groups covering every per-server setting |
+| **Operator** | `/owner` — status, guild list, blacklist, log level, backups, task queue<br>`/plugin` — list, load, unload, reload, scan, watch |
+
+Everything is **off by default**. A freshly invited bot stays silent until an
+admin runs `/config`.
+
+---
+
+## Plugins
+
+Drop a `.js` file into `plugins/` and it loads on the next start, or right away
+with `/plugin scan`. Two bundled examples: `httpserver.js` (a standalone script
+that starts a status endpoint) and `hello.js` (the full contract).
+
+A plugin can be a plain script with no exports — it just runs:
+
+```js
+// plugins/ticker.js
+setInterval(() => console.log('tick'), 60_000);
+```
+
+…or export `init(plugin)` to register slash commands, buttons, gateway
+listeners, scheduled tasks and persistent storage.
+
+Plugin files are compiled with extra parameters shadowing the globals in their
+scope, so **timers and servers are tracked automatically**:
+
+```js
+const server = require('http').createServer(handler);
+server.listen(3000);          // /plugin unload closes this port. No cleanup code.
+```
+
+`/plugin list · info · load · unload · reload · scan · watch` manages them at
+runtime; commands a plugin adds or removes are re-registered with Discord
+automatically.
+
+`.node` / `.so` native addons load via `process.dlopen` — they must be real Node
+(N-API) addons matching this ABI, platform and architecture, and they cannot be
+unloaded because Node exposes no `dlclose`. All of that is reported explicitly
+rather than as a raw dlopen error.
+
+**Plugins run with the bot's full privileges.** The compile wrapper exists for
+clean unloading, not isolation. Set `PLUGINS_ENABLED=false` where that is not
+acceptable. Full details in [`plugins/README.md`](plugins/README.md).
+
+---
+
+## Resource usage
+
+Measured in a hard 256 MB / 1-core incus container (Ubuntu 24.04, arm64,
+Node 18.19), full command set plus both example plugins, idle:
+
+| | |
+|---|---|
+| Resident memory | **76 MB** (69 MB with `--max-old-space-size=140`) |
+| Container total (cgroup) | **71 MB of 256 MB — 28%** |
+| Idle CPU | **0.02%**, peak 0.5% |
+| Boot time | **215 ms** |
+| Node + discord.js baseline | 73 MB of the above |
+| This bot's own code | ~3 MB (74 commands, 19 features, 10 games) |
+
+Idle CPU is genuinely near zero: no polling loops, and every internal timer is
+`unref`'d. Work happens on gateway events and one scheduler tick every 5 s.
+
+### On a 256 MB host
+
+Memory is dominated by discord.js, not by this bot, and it grows with what
+discord.js *caches* once guilds connect. Its defaults cache 200 messages **per
+channel** forever and never evict a user, member or voice state — which is the
+usual reason a bot slowly eats a small VPS.
+
+So the client is built from a **memory profile** that caps every cache and turns
+on sweepers. The profile is auto-selected by reading the **cgroup limit** first,
+falling back to host RAM — a 256 MB container on a big host correctly picks
+`low` rather than planning for the host's memory:
+
+| Profile | Chosen when | Message cache | Sweeps |
+|---|---|---|---|
+| `low` | ≤ 512 MB | 25/channel | messages 10 min, members/users 15 min |
+| `balanced` | ≤ 2 GB | 100/channel | messages 30 min, members/users 1 h |
+| `high` | > 2 GB | 400/channel | messages 2 h |
+
+Override with `MEMORY_PROFILE=low|balanced|high`. `low` trades away message
+delete/edit logging for messages older than ~10 minutes, which is stated in the
+log at boot rather than left to be discovered.
+
+**Also set the V8 heap ceiling.** V8 sizes its heap from *host* memory, so in a
+256 MB container it plans for gigabytes, never feels pressure, and gets
+OOM-killed with no stack trace. The bot detects this and prints the exact flag:
+
+```bash
+node --max-old-space-size=140 index.js
+```
+
+### Nothing grows without bound
+
+Every store has a ceiling, enforced either at write time or by a housekeeping
+pass that runs every 6–24 h (profile-dependent):
+
+| Data | Bound |
+|---|---|
+| Log ring buffer (for `/stats logs`) | 500 lines |
+| Log file (optional, `LOG_FILE`) | `LOG_FILE_MAX_BYTES` × (`LOG_FILE_KEEP` + 1), ~5 MB default |
+| Moderation cases | 5,000 per guild |
+| Snipe buffer | 5 per channel, 30 min, memory only |
+| Game sessions | 500, 20 min idle |
+| Tags | 200 per guild |
+| Closed polls | pruned after 30 days |
+| Resolved suggestions | pruned after 90 days |
+| Starboard mappings | pruned after 120 days |
+| Member records | empty ones pruned; on `low`, idle+valueless ones after 90 days |
+| Finished giveaways | pruned after 7 days |
+| Cooldowns, automod counters, paginators | swept on a timer |
+
+Member records are created on *read* — a leaderboard render touches every
+member — so the pass drops rows that hold nothing. `/stats memory` shows live
+cache sizes, stored record counts and the last pass's results.
+
+A **watchdog** logs a warning at 80% of the memory limit and runs housekeeping
+early at 92%, so you hear about it before the OOM killer does.
+
+### Logging
+
+All output goes to **stdout** (panels read stdout, and many discard stderr).
+That is unbounded only if something else captures it — systemd's journal and
+hosting panels rotate on their own. If nothing does, set `LOG_FILE` and the bot
+writes a size-rotated file with a hard ceiling.
+
+Plugin output goes through the same logger, tagged `[plugin:<name>]`, including
+bare `console.log` inside a plugin. Plugins get no separate log file and cannot
+grow the ring buffer beyond its cap.
+
+---
+
+## Design notes
+
+A few decisions that are load-bearing, so they do not get undone by accident:
+
+**Privileged intents degrade, they do not fail.** Login walks down a ladder of
+intent sets. If `SERVER MEMBERS` or `MESSAGE CONTENT` is switched off in the
+developer portal, the bot starts anyway and logs exactly which features that
+costs and which checkbox restores them. A bot that refuses to boot over one
+checkbox is the single most common self-hosting dead end.
+
+**Timers are persistent.** Reminders, temporary bans, giveaway endings,
+scheduled unlocks and delayed autoroles are rows in `data/tasks.json`, not
+`setTimeout` calls. A panel restart costs nothing. Overdue tasks run on boot.
+
+**Storage is crash-safe.** Writes go to a temp file and are renamed over the
+target, so a crash mid-write cannot truncate a file. Writes are debounced, a
+corrupt file is moved aside rather than deleted, and backups rotate.
+
+**`/math` does not use `eval`.** It is a hand-written tokeniser and
+recursive-descent parser (`src/util/mathexpr.js`) with a fixed function table
+and a step budget. `eval` in a public chat command is arbitrary code execution
+on the host.
+
+**Buttons instead of reactions** for polls, giveaways and suggestions. Reaction
+counts cannot tell you *who* voted without a paginated fetch, which makes vote
+switching and "you already voted" impossible to implement correctly, and
+silently truncates at large counts.
+
+**Games use a session table, not collectors.** A collector dies with the process
+and expires after 15 minutes, so a restart leaves dead buttons on every open
+board. Sessions are looked up per click and expired buttons explain themselves.
+
+**Moderation DMs the member before acting.** After a ban the bot can no longer
+open a DM channel with them, so the order matters.
+
+**Settings merge over defaults on read.** Adding a setting to `DEFAULT_GUILD` is
+the whole change — no migration step, and stores written by older versions keep
+working. Unknown keys are preserved rather than dropped.
+
+**The prefix bridge is read-only.** Text commands cover information and
+self-service only. Moderation over a text command has no permission scoping from
+Discord's side, so the bot would have to reimplement it.
+
+---
+
+## Configuration
+
+Only `DISCORD_TOKEN` is required. See `.env.example` for the full list —
+registration scope, log level, data directory, feature master switches and
+appearance.
+
+Per-server behaviour is configured in Discord:
+
+```
+/config general view          show everything currently set
+/config welcome toggle        greetings, goodbye, autorole
+/config logging channel       the audit log
+/config leveling toggle       XP, rewards, voice XP
+/config economy toggle        currency, payouts, drops
+/config moderation threshold  automatic action at N warnings
+/config commands disable      turn off a command, server-wide or per channel
+```
+
+---
+
+## Deploying
+
+Node 18+. One dependency. No database server.
+
+**You do not pass any special command-line flags.** There is exactly one thing
+to set beyond the token on a small host — `NODE_OPTIONS` — and every deployment
+file below already has it. If you forget it, the bot detects the situation at
+boot and prints the exact value to use.
+
+### Docker (recommended on a small VPS)
+
+```bash
+echo "DISCORD_TOKEN=your_token" > .env
+docker compose up -d
+```
+
+`docker-compose.yml` sets `mem_limit: 256m` and `NODE_OPTIONS`. The bot reads the
+cgroup limit and selects its `low` cache profile on its own. Container logs are
+capped at 3 × 5 MB. The healthcheck uses the bundled `httpserver` plugin.
+
+### systemd
+
+```bash
+sudo cp deploy/discord-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now discord-bot
+journalctl -u discord-bot -f
+```
+
+Sets `MemoryMax=256M`, `NODE_OPTIONS`, restart-on-failure and a hardened
+sandbox. journald rotates the logs, so `LOG_FILE` is unnecessary.
+
+### PaaS (Railway, Render, Fly.io, Koyeb, Dokploy, Coolify…)
+
+Most of these detect the `Dockerfile` and build it with no further
+configuration. Set `DISCORD_TOKEN` in their environment settings and it starts.
+
+Three things are worth knowing before you do, because a Discord bot is a
+*worker*, not a web service, and these platforms assume the opposite:
+
+**1. Some platforms kill a container that never listens on a port.** The
+bundled `httpserver` plugin covers this: when the platform injects `PORT`, it
+binds `0.0.0.0:$PORT` instead of localhost, so the health check connects. Keep
+that plugin enabled and point the platform's health check at `/health`. It
+returns 503 until the gateway is up, which is exactly right during startup.
+
+**2. The filesystem is usually ephemeral.** `data/` holds every server's
+settings, member records and moderation history. On a platform without a
+persistent volume it is wiped on every redeploy. Attach a volume mounted at
+`/app/data`, or accept that the bot resets each deploy. This is the single most
+common way to lose a server's configuration.
+
+**3. Set the heap ceiling to match the plan.** Add
+`NODE_OPTIONS=--max-old-space-size=<≈55% of plan RAM>`; the Dockerfile's default
+of 140 suits a 256 MB plan. If the platform does not expose a cgroup limit the
+bot can read, also set `MEMORY_PROFILE=low`.
+
+Scale to **one instance**. Two instances on the same token both connect to the
+gateway and every command runs twice.
+
+### Hosting panel (Pterodactyl / Pelican / FeatherPanel)
+
+Startup command:
+
+```
+if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; node index.js
+```
+
+Then add two startup variables:
+
+| Variable | Value |
+|---|---|
+| `DISCORD_TOKEN` | your token |
+| `NODE_OPTIONS` | `--max-old-space-size=140` (≈55% of your plan's RAM) |
+
+Panels usually do not expose a cgroup limit the bot can read, so if the plan is
+small also set `MEMORY_PROFILE=low` explicitly.
+
+All diagnostics go to **stdout**, never stderr, because these panels stream
+stdout to their console and frequently discard stderr — a diagnostic on stderr
+is a diagnostic nobody reads.
+
+### Bare `node`
+
+```bash
+npm install
+NODE_OPTIONS="--max-old-space-size=140" MEMORY_PROFILE=low node index.js
+```
+
+### Afterwards
+
+Back up **`data/`**. It holds every server's settings, member records and
+moderation history. Nothing else in the tree is stateful.
+
+Upgrading is `git pull && npm install && restart` — settings merge over defaults
+on read, so there is no migration step.

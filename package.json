@@ -1,0 +1,42 @@
+{
+  "name": "mulebot",
+  "version": "2.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/unit.test.js test/plugins.test.js test/runtime.test.js",
+    "test:unit": "node --test test/unit.test.js",
+    "test:plugins": "node --test test/plugins.test.js",
+    "test:runtime": "node --test test/runtime.test.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "discord.js",
+    "moderation",
+    "leveling",
+    "economy",
+    "automod",
+    "games"
+  ],
+  "author": "mulemew",
+  "license": "MIT",
+  "description": "Modular Discord bot: moderation, automod, levelling, economy, games, tickets, giveaways and server automation",
+  "dependencies": {
+    "discord.js": "^14.27.0"
+  },
+  "optionalDependencies": {
+    "dotenv": "^17.4.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mulemew/mulebot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mulemew/mulebot/issues"
+  },
+  "homepage": "https://github.com/mulemew/mulebot#readme"
+}

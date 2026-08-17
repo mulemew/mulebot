@@ -1,0 +1,42 @@
+# docker compose up -d
+#
+# The memory limit is the important line: the bot reads it through the cgroup
+# and picks its cache profile from it, so there is nothing else to tune.
+
+services:
+  bot:
+    build: .
+    container_name: discord-bot
+    restart: unless-stopped
+
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env}
+      # Optional. Leave unset to register commands globally.
+      GUILD_ID: ${GUILD_ID:-}
+      OWNER_IDS: ${OWNER_IDS:-}
+      # Roughly 55% of the limit below. Without it V8 plans for host memory.
+      NODE_OPTIONS: --max-old-space-size=140
+
+    # 256 MB hard ceiling -> the bot auto-selects its "low" cache profile.
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 1.0
+
+    volumes:
+      # Guild settings, member records, cases, scheduled tasks. Back this up.
+      - bot-data:/app/data
+      # Drop .js files in ./plugins on the host to add plugins without rebuilding.
+      - ./plugins:/app/plugins:ro
+
+    # Only needed if you want the status endpoint reachable from outside.
+    # ports:
+    #   - "127.0.0.1:3000:3000"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  bot-data:

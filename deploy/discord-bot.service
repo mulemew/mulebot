@@ -1,0 +1,80 @@
+# systemd unit for a small VPS.
+#
+#   sudo cp deploy/discord-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now discord-bot
+#   journalctl -u discord-bot -f
+#
+# Edit User, WorkingDirectory and the memory numbers to match your host.
+# The two memory settings below are the whole point of this file:
+#
+#   MemoryMax    a hard cgroup ceiling. The bot reads it and picks its cache
+#                profile from it, so setting this is also what makes the bot
+#                configure itself.
+#   NODE_OPTIONS caps the V8 heap. Without it V8 sizes the heap from *host*
+#                memory, never collects under pressure, and gets OOM-killed
+#                with no stack trace. Use roughly 55% of MemoryMax.
+
+[Unit]
+Description=Discord Bot
+Documentation=file:///opt/discord-bot/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=discordbot
+Group=discordbot
+WorkingDirectory=/opt/discord-bot
+
+# --- configuration ---
+# Prefer an environment file over inline Environment= so the token never
+# appears in `systemctl show` output or the journal.
+EnvironmentFile=/opt/discord-bot/.env
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=140
+
+ExecStart=/usr/bin/node index.js
+
+# --- memory ---
+# 256 MB hard ceiling. The bot detects this through the cgroup and switches to
+# its "low" cache profile automatically.
+MemoryMax=256M
+MemoryHigh=224M
+
+# --- restart policy ---
+Restart=always
+RestartSec=10
+# Give up only if it is crash-looping, so a genuine misconfiguration is visible
+# rather than being retried forever.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# --- shutdown ---
+# The bot flushes its JSON stores and closes plugin-held ports on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# --- logging ---
+# All bot output goes to stdout; journald captures and rotates it, so LOG_FILE
+# is unnecessary here.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=discord-bot
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# The data directory must stay writable; add plugins/ too if plugins write there.
+ReadWritePaths=/opt/discord-bot/data
+
+[Install]
+WantedBy=multi-user.target
