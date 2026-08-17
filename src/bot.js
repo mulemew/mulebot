@@ -374,8 +374,29 @@ class Bot {
     const { REST, Routes } = this.discord;
     const rest = new REST({ version: '10' }).setToken(this.config.token);
     const appId = this.client.user.id;
-    const guildId = this.config.guildId;
     const body = this.registry.toJSON({ features: this.config.features });
+
+    // Where to register.
+    //
+    // Global registration is correct for a bot in many servers, but Discord can
+    // take up to an hour to propagate it. For a self-hoster in one or two
+    // servers that hour is spent wondering whether the setup is broken, and the
+    // usual answer - "set GUILD_ID" - means hunting for a snowflake in a UI
+    // where Developer Mode is off by default.
+    //
+    // So when GUILD_ID is not set and the bot is in a handful of servers, each
+    // one is registered directly: same result, visible immediately, nothing to
+    // configure. Past that threshold, per-guild calls stop being reasonable and
+    // global is the right choice anyway.
+    const AUTO_GUILD_LIMIT = 5;
+    const joined = [...this.client.guilds.cache.keys()];
+    let targets = null; // null means global
+
+    if (this.config.guildId) {
+      targets = [this.config.guildId];
+    } else if (joined.length > 0 && joined.length <= AUTO_GUILD_LIMIT) {
+      targets = joined;
+    }
 
     if (body.length > 100) {
       const error = `${body.length} commands exceed Discord's limit of 100`;
@@ -385,22 +406,41 @@ class Bot {
 
     const started = Date.now();
     try {
-      if (guildId) await rest.put(Routes.applicationGuildCommands(appId, guildId), { body });
-      else await rest.put(Routes.applicationCommands(appId), { body });
+      if (targets) {
+        for (const id of targets) {
+          await rest.put(Routes.applicationGuildCommands(appId, id), { body });
+        }
+        const took = Date.now() - started;
 
-      this.log.info(
-        `registered ${body.length} command(s) ${guildId ? `to guild ${guildId} (instant)` : 'globally'} ` +
-          `in ${Date.now() - started}ms`,
-      );
-      return { ok: true, count: body.length };
+        if (this.config.guildId) {
+          this.log.info(`registered ${body.length} command(s) to guild ${this.config.guildId} in ${took}ms (instant)`);
+        } else {
+          const names = targets
+            .map((id) => this.client.guilds.cache.get(id)?.name || id)
+            .join(', ');
+          this.log.info(
+            `registered ${body.length} command(s) to ${targets.length} server(s) in ${took}ms — available now`,
+          );
+          this.log.info(`  ${names}`);
+          this.log.info('  (no GUILD_ID set, so each server was registered directly rather than globally,');
+          this.log.info('   which would have taken up to an hour to appear)');
+        }
+      } else {
+        await rest.put(Routes.applicationCommands(appId), { body });
+        this.log.info(`registered ${body.length} command(s) globally in ${Date.now() - started}ms`);
+      }
+      return { ok: true, count: body.length, scope: targets ? 'guild' : 'global' };
     } catch (e) {
       this.log.error(`command registration failed: ${e.message}`);
       if (/missing access|50001/i.test(e.message)) {
         this.log.error('The bot was invited without the applications.commands scope.');
         this.log.error('Re-invite it with both bot and applications.commands selected.');
       }
-      if (/unknown guild|50035/i.test(e.message) && guildId) {
-        this.log.error(`GUILD_ID=${guildId} is not a server this bot is in. Clear it to register globally.`);
+      if (/unknown guild|50035/i.test(e.message) && this.config.guildId) {
+        this.log.error(
+          `GUILD_ID=${this.config.guildId} is not a server this bot is in. Clear it and the bot will ` +
+            'register to whichever servers it is actually in.',
+        );
       }
       return { ok: false, error: e.message };
     }

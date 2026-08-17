@@ -281,3 +281,55 @@ test('the invite link asks for what the commands actually need', () => {
 
   assert.match(perms.inviteUrl('123'), /client_id=123.*scope=bot%20applications\.commands/);
 });
+
+// ---------------------------------------------------------------------------
+test('command registration targets the servers the bot is actually in', async () => {
+  // Global registration takes Discord up to an hour to propagate. For someone
+  // self-hosting in one server that hour is spent wondering whether the setup
+  // is broken, and the stock answer — "set GUILD_ID" — means hunting for a
+  // snowflake in a UI where Developer Mode is off by default. So with no
+  // GUILD_ID and a handful of servers, each is registered directly instead.
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  const cases = [
+    { label: 'one server, no GUILD_ID', guilds: ['1'], env: '', expect: 'guild', calls: 1 },
+    { label: 'three servers, no GUILD_ID', guilds: ['1', '2', '3'], env: '', expect: 'guild', calls: 3 },
+    { label: 'explicit GUILD_ID wins', guilds: ['1', '2', '3'], env: '9', expect: 'guild', calls: 1 },
+    { label: 'past the threshold, go global', guilds: ['1', '2', '3', '4', '5', '6'], env: '', expect: 'global', calls: 1 },
+    { label: 'no servers yet', guilds: [], env: '', expect: 'global', calls: 1 },
+  ];
+
+  for (const testCase of cases) {
+    process.env.GUILD_ID = testCase.env;
+    process.env.PLUGINS_DIR = tempDir('reg-p-');
+    process.env.DATA_DIR = tempDir('reg-d-');
+    process.env.LOG_LEVEL = 'silent';
+    delete process.env.REGISTER_COMMANDS;
+
+    const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+    await bot.init();
+
+    for (const id of testCase.guilds) bot.client.guilds.cache.set(id, { id, name: `server-${id}` });
+    Object.defineProperty(bot.client, 'user', { value: { id: 'app' }, configurable: true });
+
+    const routes = [];
+    const original = discord.REST.prototype.put;
+    discord.REST.prototype.put = async function put(route) {
+      routes.push(route);
+    };
+
+    const result = await bot.registerCommands();
+    discord.REST.prototype.put = original;
+
+    assert.equal(result.scope, testCase.expect, `${testCase.label}: expected ${testCase.expect} scope`);
+    assert.equal(routes.length, testCase.calls, `${testCase.label}: expected ${testCase.calls} REST call(s)`);
+    if (testCase.expect === 'guild') {
+      assert.ok(routes.every((r) => r.includes('/guilds/')), `${testCase.label}: should use the guild route`);
+    }
+
+    await bot.shutdown();
+  }
+
+  delete process.env.GUILD_ID;
+});

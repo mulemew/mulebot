@@ -39,9 +39,10 @@ missing and prints the exact value to use.
 
 Two more worth knowing about, neither required:
 
-- `GUILD_ID` — while setting up, registers commands to one server so they appear
-  instantly instead of taking up to an hour.
-- `OWNER_IDS` — your Discord user ID; `/owner` and `/plugin` need it.
+- `GUILD_ID` — pins command registration to one server. Usually unnecessary: with
+  it unset and the bot in five servers or fewer, each is registered directly, so
+  commands appear immediately rather than taking Discord up to an hour.
+- `OWNER_IDS` — your Discord user ID; only `/owner` and `/plugin` need it.
 
 The remaining ~38 are operational knobs (cache and log tuning, feature switches,
 embed colours). They exist for the cases that need them; ignore them otherwise.
