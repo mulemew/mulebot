@@ -37,6 +37,9 @@ module.exports = {
       `boot took ${Date.now() - bot.startedAt}ms`,
     ]);
 
+    // Discord knows who owns the application, so OWNER_IDS need not be set.
+    await bot.resolveApplicationOwners();
+
     // ---------- presence ----------
     try {
       const type = ACTIVITY_TYPES[bot.config.activityType.toLowerCase()] ?? ActivityType.Playing;

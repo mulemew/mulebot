@@ -92,7 +92,18 @@ module.exports = {
     }
 
     if (command.ownerOnly && !bot.isOwner(interaction.user.id)) {
-      return interaction.reply({ content: t('err.ownerOnly'), flags: MessageFlags.Ephemeral }).catch(() => {});
+      // "Restricted to the bot owner" is useless on its own when the reader is
+      // the bot owner and the bot simply has not been told. Say what would fix
+      // it, and say it differently depending on which case this is.
+      const knowsAnOwner = bot.config.owners.length > 0 || bot.applicationOwners.length > 0;
+      const detail = knowsAnOwner
+        ? ''
+        : '\n\nI could not work out who owns this application, and `OWNER_IDS` is not set. ' +
+          `Add \`OWNER_IDS=${interaction.user.id}\` to your environment or \`.env\` and restart.`;
+
+      return interaction
+        .reply({ content: t('err.ownerOnly') + detail, flags: MessageFlags.Ephemeral })
+        .catch(() => {});
     }
 
     // ---------- per-guild switches ----------

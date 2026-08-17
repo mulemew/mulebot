@@ -50,6 +50,12 @@ class Bot {
     this.intents = { members: false, messageContent: false, presence: false };
 
     this.counters = { commands: 0, interactions: 0, messages: 0, errors: 0 };
+
+    /**
+     * Owner ids fetched from Discord at startup, so OWNER_IDS is optional.
+     * Empty until the gateway is ready.
+     */
+    this.applicationOwners = [];
   }
 
   // ---------- construction ----------
@@ -478,9 +484,55 @@ class Bot {
 
   // ---------- helpers used across the codebase ----------
 
-  /** True when the user is configured as a bot owner. */
+  /**
+   * True when the user owns this bot.
+   *
+   * OWNER_IDS is honoured when set, but is not required: Discord already knows
+   * who owns the application, so that is fetched at startup and used when
+   * nothing was configured. Making someone find their own user ID — which needs
+   * Developer Mode switched on — to be recognised as the owner of a bot they
+   * created is configuration that should not exist.
+   */
   isOwner(userId) {
-    return this.config.owners.includes(String(userId));
+    const id = String(userId);
+    if (this.config.owners.includes(id)) return true;
+    return this.applicationOwners.includes(id);
+  }
+
+  /**
+   * Asks Discord who owns this application. A team-owned application has
+   * several owners; all of them count.
+   */
+  async resolveApplicationOwners() {
+    try {
+      const application = await this.client.application.fetch();
+      const owners = [];
+
+      if (application.owner) {
+        // A team has a members collection; a user does not.
+        if (application.owner.members) {
+          for (const member of application.owner.members.values()) owners.push(member.id ?? member.user?.id);
+        } else {
+          owners.push(application.owner.id);
+        }
+      }
+
+      this.applicationOwners = owners.filter(Boolean).map(String);
+
+      if (this.applicationOwners.length && !this.config.owners.length) {
+        this.log.info(
+          `owner commands are available to the application owner (${this.applicationOwners.join(', ')}) — ` +
+            'set OWNER_IDS to add more',
+        );
+      }
+      return this.applicationOwners;
+    } catch (e) {
+      this.log.warn(`could not determine the application owner: ${e.message}`);
+      if (!this.config.owners.length) {
+        this.log.warn('/owner and /plugin will refuse everyone until OWNER_IDS is set');
+      }
+      return [];
+    }
   }
 
   /** Merged settings for a guild, or the defaults when outside a guild. */

@@ -452,3 +452,85 @@ test('a read-only plugins directory falls back, and says so', async () => {
   await bot.shutdown();
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+test('the application owner is recognised without OWNER_IDS being set', async () => {
+  // Requiring someone to find their own user ID — which needs Developer Mode
+  // switched on — before the bot will accept them as the owner of a bot they
+  // created is configuration that should not exist. Discord already knows.
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  process.env.OWNER_IDS = '';
+  process.env.PLUGINS_DIR = tempDir('own-p-');
+  process.env.DATA_DIR = tempDir('own-d-');
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+
+  assert.equal(bot.config.owners.length, 0, 'nothing configured');
+  assert.equal(bot.isOwner('555'), false, 'and nobody is an owner before asking Discord');
+
+  bot.client.application = { fetch: async () => ({ owner: { id: '555' } }) };
+  await bot.resolveApplicationOwners();
+
+  assert.equal(bot.isOwner('555'), true, 'the application owner is an owner');
+  assert.equal(bot.isOwner('666'), false, 'and nobody else is');
+
+  await bot.shutdown();
+});
+
+test('a team-owned application makes every team member an owner', async () => {
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  process.env.OWNER_IDS = '999';
+  process.env.PLUGINS_DIR = tempDir('own2-p-');
+  process.env.DATA_DIR = tempDir('own2-d-');
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+
+  bot.client.application = {
+    fetch: async () => ({ owner: { members: new Map([['a', { id: '111' }], ['b', { id: '222' }]]) } }),
+  };
+  await bot.resolveApplicationOwners();
+
+  assert.equal(bot.isOwner('111'), true, 'team members count');
+  assert.equal(bot.isOwner('222'), true);
+  assert.equal(bot.isOwner('999'), true, 'and OWNER_IDS still adds to them rather than replacing them');
+  assert.equal(bot.isOwner('333'), false);
+
+  await bot.shutdown();
+  delete process.env.OWNER_IDS;
+});
+
+test('a failed owner lookup degrades instead of throwing', async () => {
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  process.env.OWNER_IDS = '';
+  process.env.PLUGINS_DIR = tempDir('own3-p-');
+  process.env.DATA_DIR = tempDir('own3-d-');
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+
+  bot.client.application = {
+    fetch: async () => {
+      throw new Error('Missing Access');
+    },
+  };
+
+  const owners = await bot.resolveApplicationOwners();
+  assert.deepEqual(owners, [], 'an unreachable lookup yields no owners rather than an exception');
+  assert.equal(bot.isOwner('anyone'), false);
+
+  await bot.shutdown();
+});
