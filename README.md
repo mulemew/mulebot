@@ -79,7 +79,7 @@ src/events/              gateway event handlers
 src/commands/            slash commands, grouped by category
 
 plugins/                 drop .js files here — see plugins/README.md
-test/                    70 tests: pure logic, plugins, runtime limits, gateway resilience
+test/                    74 tests: pure logic, plugins, runtime limits, gateway resilience
 ```
 
 Run the tests with `npm test` (Node's built-in runner, no dev dependencies).
@@ -131,9 +131,9 @@ consequential as editing the bot's source. Set `PLUGINS_ENABLED=false` where tha
 is not acceptable.
 
 📖 **Everything else is in [`plugins/README.md`](plugins/README.md)** — the
-context API, dependency handling, persistence modes, native addons, native addons and the
-persistence modes.
+context API, dependency handling, persistence modes and native addons.
 
+---
 
 ## Resource usage
 
