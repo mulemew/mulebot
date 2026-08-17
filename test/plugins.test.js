@@ -564,6 +564,118 @@ test('installing from a URL supports disk, once and memory modes', async (t) => 
   await assert.rejects(() => bot.plugins.installFromUrl('nonsense', { name: 'x' }), /valid URL/);
 });
 
+test('the web panel stores a verifier, not the secret, and issues sessions', async (t) => {
+  const dir = tempDir('bot-plugins-');
+  const port = takePort();
+  const SECRET = 'a-secret-i-chose-myself';
+
+  fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));
+
+  // Generate the verifier the way a user would: on their own machine, via CLI.
+  const output = require('node:child_process').execSync(
+    `node "${path.join(ROOT, 'plugins', 'webpanel.js')}" --hash "${SECRET}"`,
+    { encoding: 'utf8' },
+  );
+  const verifier = (output.match(/scrypt\$\S+/) || [])[0];
+
+  assert.ok(verifier, 'the CLI should print a verifier');
+  assert.equal(verifier.includes(SECRET), false, 'the verifier must not contain the secret');
+
+  fs.writeFileSync(
+    path.join(dir, 'plugins.json'),
+    JSON.stringify({ config: { webpanel: { tokenHash: verifier, port, host: '127.0.0.1' } } }),
+  );
+
+  // The whole point: nothing on disk reveals a usable credential.
+  const onDisk = fs.readFileSync(path.join(dir, 'plugins.json'), 'utf8');
+  assert.equal(onDisk.includes(SECRET), false, 'the stored config must not contain the secret');
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await new Promise((r) => setTimeout(r, 400));
+
+  assert.equal(bot.plugins.get('webpanel')?.state, 'loaded', bot.plugins.get('webpanel')?.error?.message);
+
+  const call = (pathname, { method = 'GET', bearer = null, body = null } = {}) =>
+    new Promise((resolve, reject) => {
+      const payload = body ? JSON.stringify(body) : null;
+      const r = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: pathname,
+          method,
+          headers: {
+            ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+            ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}),
+          },
+        },
+        (res) => {
+          let out = '';
+          res.on('data', (c) => (out += c));
+          res.on('end', () => {
+            let json = {};
+            try {
+              json = JSON.parse(out);
+            } catch {
+              /* not every response is JSON */
+            }
+            resolve({ status: res.statusCode, json });
+          });
+        },
+      );
+      r.on('error', reject);
+      if (payload) r.write(payload);
+      r.end();
+    });
+
+  assert.equal((await call('/api/login', { method: 'POST', body: { secret: 'wrong' } })).status, 401);
+
+  const login = await call('/api/login', { method: 'POST', body: { secret: SECRET } });
+  assert.equal(login.status, 200, 'the right secret should log in');
+  const session = login.json.session;
+  assert.ok(session, 'a session token should be issued');
+  assert.notEqual(session, SECRET, 'the session must not be the secret');
+
+  assert.equal((await call('/api/state', { bearer: session })).status, 200, 'the session should authorise');
+
+  // The secret is not itself a bearer credential: it only works at /api/login.
+  assert.equal((await call('/api/state', { bearer: SECRET })).status, 401, 'the secret must not work as a bearer');
+  assert.equal((await call('/api/state', { bearer: 'x'.repeat(43) })).status, 401, 'a forged session must fail');
+
+  const anon = await call('/api/state');
+  assert.equal(anon.status, 401);
+  assert.equal(anon.json.needsLogin, true, 'the client needs to be told to log in again');
+
+  await call('/api/logout', { method: 'POST', bearer: session });
+  assert.equal((await call('/api/state', { bearer: session })).status, 401, 'logout must invalidate the session');
+});
+
+test('the web panel refuses to start without a usable credential', async (t) => {
+  const dir = tempDir('bot-plugins-');
+  fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));
+
+  const cases = [
+    [{}, /needs a credential/],
+    [{ token: 'short' }, /at least 24/],
+    [{ tokenHash: 'not-a-verifier' }, /not a valid verifier/],
+  ];
+
+  for (const [cfg, expected] of cases) {
+    fs.writeFileSync(path.join(dir, 'plugins.json'), JSON.stringify({ config: { webpanel: cfg } }));
+    const bot = await boot(dir);
+    const plugin = bot.plugins.get('webpanel');
+    assert.equal(plugin.state, 'failed', `${JSON.stringify(cfg)} should refuse to start`);
+    assert.match(plugin.error.message, expected);
+    await bot.shutdown();
+  }
+
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+});
+
 test('the bundled example plugins load and behave', async (t) => {
   // Runs against the real plugins/ directory, so a broken shipped example is
   // caught rather than shipped.

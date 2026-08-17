@@ -11,6 +11,16 @@
     "httpserver": {
       "port": 3000,
       "host": "127.0.0.1"
-    }
+    },
+
+    "_webpanel_setup": [
+      "The panel is inert until you give it a credential — it refuses to load.",
+      "Generate one on YOUR machine so the secret never reaches this host:",
+      "  node plugins/webpanel.js --hash",
+      "then move the printed verifier into a 'webpanel' block below, e.g.",
+      "  \"webpanel\": { \"tokenHash\": \"scrypt$16384$8$1$...\", \"port\": 8787 }",
+      "Only the verifier is stored here; the secret cannot be recovered from it.",
+      "Reaching it remotely: ssh -L 8787:127.0.0.1:8787 you@host"
+    ]
   }
 }

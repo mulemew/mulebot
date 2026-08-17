@@ -14,10 +14,14 @@
  *
  * So it is built to fail closed:
  *
- *   - it refuses to start without an auth token; there is no default
- *   - a token shorter than 24 characters is rejected
+ *   - it refuses to start without a credential; there is no default
+ *   - the credential is stored as a scrypt VERIFIER, so the secret itself never
+ *     exists on the host. A copy of the config - a platform variables page,
+ *     docker inspect, a backup, a screenshot - yields nothing usable.
+ *   - the secret is sent once, at login, and exchanged for a session token, so
+ *     it does not travel on every request and the browser never stores it
  *   - it binds 127.0.0.1 unless a host is set explicitly, even under PaaS
- *   - token comparison is constant-time
+ *   - comparisons are constant-time
  *   - failed attempts are rate limited per address, then temporarily blocked
  *   - uploads must be a plain filename ending in .js, capped at 256 KB
  *   - npm package names are validated against the registry's own grammar and
@@ -31,12 +35,16 @@
  * Configure in plugins/plugins.json:
  *
  *     { "config": { "webpanel": {
- *         "token": "a-long-random-string",
+ *         "tokenHash": "scrypt$16384$8$1$...",
  *         "port": 8787,
  *         "host": "127.0.0.1"
  *     } } }
  *
- * Or set WEBPANEL_TOKEN in the environment.
+ * Generate the verifier on your own machine, so the secret never reaches the host:
+ *
+ *     node plugins/webpanel.js --hash
+ *
+ * A plaintext "token" is still accepted for compatibility, with a warning.
  */
 
 'use strict';
@@ -46,6 +54,64 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+
+/**
+ * scrypt parameters for the credential verifier.
+ *
+ * N=16384 costs roughly 16 MB and tens of milliseconds per derivation. That is
+ * deliberately slow: the point of storing a verifier rather than the secret is
+ * that a copy of the config must not yield a usable credential, and a fast hash
+ * (SHA-256 of a short secret) would fall to an offline dictionary attack in
+ * seconds. It runs once per login, not per request, because a successful login
+ * is exchanged for a session token.
+ *
+ * 16 MB also has to be affordable on a 256 MB host, which rules out the larger
+ * parameter sets often recommended for password storage.
+ */
+const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 32, maxmem: 64 * 1024 * 1024 };
+
+/** Parses "scrypt$N$r$p$salt$hash". Returns null when it is not one. */
+function parseVerifier(value) {
+  const parts = String(value).split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return null;
+  const [, N, r, p, salt, hash] = parts;
+  if (!/^\d+$/.test(N) || !/^\d+$/.test(r) || !/^\d+$/.test(p)) return null;
+  if (!salt || !hash) return null;
+  return { N: Number(N), r: Number(r), p: Number(p), salt, hash };
+}
+
+/** Derives a verifier string from a secret. */
+function makeVerifier(secret, salt = crypto.randomBytes(16)) {
+  const derived = crypto.scryptSync(secret, salt, SCRYPT.keylen, {
+    N: SCRYPT.N,
+    r: SCRYPT.r,
+    p: SCRYPT.p,
+    maxmem: SCRYPT.maxmem,
+  });
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString('base64url')}$${derived.toString('base64url')}`;
+}
+
+/** Constant-time check of a secret against a stored verifier. */
+function verifyAgainstVerifier(secret, stored) {
+  const parsed = parseVerifier(stored);
+  if (!parsed) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    const salt = Buffer.from(parsed.salt, 'base64url');
+    const expected = Buffer.from(parsed.hash, 'base64url');
+    // Async so a login attempt does not stall the gateway for 50-100ms.
+    crypto.scrypt(
+      secret,
+      salt,
+      expected.length,
+      { N: parsed.N, r: parsed.r, p: parsed.p, maxmem: SCRYPT.maxmem },
+      (err, derived) => {
+        if (err) return resolve(false);
+        resolve(derived.length === expected.length && crypto.timingSafeEqual(derived, expected));
+      },
+    );
+  });
+}
 
 const MAX_UPLOAD_BYTES = 256 * 1024;
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
@@ -61,20 +127,40 @@ module.exports = {
   init(plugin) {
     const { bot, log, config } = plugin;
 
-    // ---------- refuse to run without a real token ----------
-    const token = String(config.token || process.env.WEBPANEL_TOKEN || '');
-    if (!token) {
+    // ---------- credential ----------
+    // Preferred: a scrypt verifier, so the secret itself is never stored on the
+    // host. Accepted for compatibility: a plaintext token, which warns.
+    const verifier = String(config.tokenHash || process.env.WEBPANEL_TOKEN_HASH || '').trim();
+    const plaintext = String(config.token || process.env.WEBPANEL_TOKEN || '');
+
+    if (!verifier && !plaintext) {
       throw new Error(
-        'webpanel needs an auth token and there is no default. ' +
-          'Set it in plugins/plugins.json as config.webpanel.token, or as WEBPANEL_TOKEN. ' +
-          'Generate one with:  node -e "console.log(require(\'crypto\').randomBytes(24).toString(\'hex\'))"',
+        'webpanel needs a credential and there is no default.\n' +
+          '  Recommended — store a verifier, not the secret:\n' +
+          '    node plugins/webpanel.js --hash\n' +
+          '  then put the printed string in plugins/plugins.json as config.webpanel.tokenHash\n' +
+          '  (or in WEBPANEL_TOKEN_HASH). The secret itself is never written to this host.\n' +
+          '  Alternative — a plaintext token in config.webpanel.token or WEBPANEL_TOKEN.',
       );
     }
-    if (token.length < 24) {
+
+    if (verifier && !parseVerifier(verifier)) {
       throw new Error(
-        `webpanel token is ${token.length} characters; at least 24 are required. ` +
-          'This endpoint can execute arbitrary code, so a guessable token is not survivable.',
+        'config.webpanel.tokenHash is not a valid verifier. It should look like ' +
+          '"scrypt$16384$8$1$<salt>$<hash>". Generate one with:  node plugins/webpanel.js --hash',
       );
+    }
+
+    if (!verifier) {
+      if (plaintext.length < 24) {
+        throw new Error(
+          `webpanel token is ${plaintext.length} characters; at least 24 are required. ` +
+            'This endpoint can execute arbitrary code, so a guessable secret is not survivable.',
+        );
+      }
+      log.warn('using a plaintext token. Anything that can read this host\'s config or environment');
+      log.warn('can read it — a platform variables page, docker inspect, a config backup, a screenshot.');
+      log.warn('Store a verifier instead so the secret never lands here:  node plugins/webpanel.js --hash');
     }
 
     const port = Number(config.port || process.env.WEBPANEL_PORT || 8787);
@@ -83,9 +169,38 @@ module.exports = {
     // execution panel because an environment variable happened to be set is not.
     const host = config.host || '127.0.0.1';
 
-    const tokenHash = crypto.createHash('sha256').update(token).digest();
     /** address -> { failures, blockedUntil } */
     const attempts = new Map();
+
+    /**
+     * Live sessions: token -> { expiresAt, address }.
+     *
+     * The secret crosses the wire once, at login, and is exchanged for a random
+     * session token used for every later request. Three things follow from that:
+     * the browser never has to store the secret, a captured session expires on
+     * its own, and the slow key derivation runs once per login instead of once
+     * per API call.
+     *
+     * Memory only, so a restart invalidates every session.
+     */
+    const sessions = new Map();
+    const SESSION_TTL_MS = (Number(config.sessionHours) || 8) * 3_600_000;
+
+    function newSession(req) {
+      const id = crypto.randomBytes(32).toString('base64url');
+      sessions.set(id, { expiresAt: Date.now() + SESSION_TTL_MS, address: addressOf(req) });
+      return { id, expiresAt: Date.now() + SESSION_TTL_MS };
+    }
+
+    function validSession(id) {
+      const s = sessions.get(id);
+      if (!s) return false;
+      if (s.expiresAt < Date.now()) {
+        sessions.delete(id);
+        return false;
+      }
+      return true;
+    }
 
     // Optional address allow-list, for when the panel must be reachable beyond
     // localhost. A bearer token is the primary gate; this narrows who may even
@@ -98,14 +213,31 @@ module.exports = {
       return req.socket.remoteAddress || 'unknown';
     }
 
-    function authorised(req) {
+    function bearerOf(req) {
       const header = req.headers.authorization || '';
-      const supplied = header.startsWith('Bearer ') ? header.slice(7) : '';
-      if (!supplied) return false;
-      // Hash both sides first so timingSafeEqual always compares equal lengths;
-      // it throws on a length mismatch, which would itself leak the length.
-      const suppliedHash = crypto.createHash('sha256').update(supplied).digest();
-      return crypto.timingSafeEqual(tokenHash, suppliedHash);
+      return header.startsWith('Bearer ') ? header.slice(7) : '';
+    }
+
+    /** Every request except /api/login is authorised by a session token. */
+    function authorised(req) {
+      const supplied = bearerOf(req);
+      return Boolean(supplied) && validSession(supplied);
+    }
+
+    /**
+     * Checks the secret against whichever credential form is configured.
+     * Returns a promise so scrypt does not block the event loop.
+     */
+    async function verifySecret(secret) {
+      if (!secret) return false;
+
+      if (verifier) return verifyAgainstVerifier(secret, verifier);
+
+      // Plaintext fallback. Hash both sides so timingSafeEqual gets equal
+      // lengths - it throws otherwise, and the throw would itself leak length.
+      const a = crypto.createHash('sha256').update(secret).digest();
+      const b = crypto.createHash('sha256').update(plaintext).digest();
+      return crypto.timingSafeEqual(a, b);
     }
 
     function blocked(req) {
@@ -457,11 +589,40 @@ module.exports = {
 
       if (!url.pathname.startsWith('/api/')) return send(res, 404, { error: 'not found' });
 
-      if (!authorised(req)) {
-        recordFailure(req);
-        return send(res, 401, { error: 'bad or missing token' });
+      // ---------- login: the only endpoint that takes the secret ----------
+      if (url.pathname === '/api/login' && req.method === 'POST') {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch (e) {
+          return send(res, 400, { error: e.message });
+        }
+
+        const ok = await verifySecret(String(body.secret || ''));
+        if (!ok) {
+          recordFailure(req);
+          // A uniform delay on failure keeps a wrong secret from being
+          // distinguishable by response time from a malformed one.
+          await new Promise((r) => setTimeout(r, 250));
+          return send(res, 401, { error: 'wrong secret' });
+        }
+
+        recordSuccess(req);
+        const session = newSession(req);
+        log.info(`panel session opened from ${addressOf(req)}`);
+        return send(res, 200, { session: session.id, expiresAt: session.expiresAt });
       }
-      recordSuccess(req);
+
+      if (url.pathname === '/api/logout' && req.method === 'POST') {
+        sessions.delete(bearerOf(req));
+        return send(res, 200, { ok: true });
+      }
+
+      if (!authorised(req)) {
+        // Not counted as a failed credential attempt: an expired session is
+        // normal, and counting it would lock out a legitimate user.
+        return send(res, 401, { error: 'no valid session', needsLogin: true });
+      }
 
       try {
         await handleApi(req, res, url);
@@ -488,11 +649,13 @@ module.exports = {
       }
     });
 
-    // Sweep the failed-attempt table so a scan cannot grow it without bound.
+    // Sweep expired sessions and the failed-attempt table so a scan cannot grow
+    // either without bound.
     plugin.setInterval(
       () => {
         const now = Date.now();
         for (const [key, entry] of attempts) if (entry.blockedUntil && entry.blockedUntil < now) attempts.delete(key);
+        for (const [id, s2] of sessions) if (s2.expiresAt < now) sessions.delete(id);
       },
       5 * 60_000,
     );
@@ -556,9 +719,9 @@ const PAGE = `<!doctype html>
 
 <div id="gate" class="gate card">
   <h2>Plugin panel</h2>
-  <p class="note">This panel uploads and runs code inside the bot process. Enter the token from <span class="mono">plugins.json</span>.</p>
+  <p class="note">This panel uploads and runs code inside the bot process. Enter your secret — the server stores only a scrypt verifier of it, never the secret itself.</p>
   <div class="row" style="margin-top:12px">
-    <input id="tok" type="password" class="grow" placeholder="access token" autocomplete="current-password">
+    <input id="tok" type="password" class="grow" placeholder="secret" autocomplete="current-password">
     <button onclick="unlock()">Enter</button>
   </div>
   <div id="gateErr" class="err"></div>
@@ -643,33 +806,73 @@ http.createServer((q, r) =&gt; r.end('hi')).listen(3001, '127.0.0.1');
 </div>
 
 <script>
-var TOKEN = sessionStorage.getItem('panelToken') || '';
+// Only a session token is ever kept here. The secret is sent once, to
+// /api/login, and never stored by the browser.
+var TOKEN = sessionStorage.getItem('panelSession') || '';
 
 function api(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ 'authorization': 'Bearer ' + TOKEN, 'content-type': 'application/json' }, opts.headers || {});
   return fetch(path, opts).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
+      if (r.status === 401 && j.needsLogin) {
+        // The session expired or the bot restarted; go back to the gate rather
+        // than showing a wall of failures.
+        sessionStorage.removeItem('panelSession');
+        location.reload();
+      }
       if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
       return j;
     });
   });
 }
 
+function enterApp() {
+  document.getElementById('gate').classList.add('hide');
+  document.getElementById('app').classList.remove('hide');
+  refresh();
+  setInterval(refresh, 5000);
+}
+
 function unlock() {
-  TOKEN = document.getElementById('tok').value.trim();
-  api('/api/state').then(function () {
-    sessionStorage.setItem('panelToken', TOKEN);
-    document.getElementById('gate').classList.add('hide');
-    document.getElementById('app').classList.remove('hide');
-    refresh();
-    setInterval(refresh, 5000);
+  var secret = document.getElementById('tok').value.trim();
+  if (!secret) return;
+  var err = document.getElementById('gateErr');
+  err.textContent = 'checking…';
+
+  fetch('/api/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ secret: secret })
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      return j;
+    });
+  }).then(function (j) {
+    TOKEN = j.session;
+    sessionStorage.setItem('panelSession', TOKEN);
+    document.getElementById('tok').value = '';
+    err.textContent = '';
+    enterApp();
   }).catch(function (e) {
-    document.getElementById('gateErr').textContent = e.message;
+    err.textContent = e.message;
   });
 }
 
-function lock() { sessionStorage.removeItem('panelToken'); location.reload(); }
+// Resuming with an existing session needs no secret and no derivation.
+function resume() {
+  api('/api/state').then(enterApp).catch(function () {
+    sessionStorage.removeItem('panelSession');
+    TOKEN = '';
+  });
+}
+
+function lock() {
+  api('/api/logout', { method: 'POST' }).catch(function () {});
+  sessionStorage.removeItem('panelSession');
+  setTimeout(function () { location.reload(); }, 150);
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -853,7 +1056,85 @@ function install() {
     .catch(function (e) { out.textContent = 'Failed: ' + e.message; });
 }
 
-if (TOKEN) unlock();
+if (TOKEN) resume();
 </script>
 </body>
 </html>`;
+
+// ---------------------------------------------------------------------------
+// CLI: generate a verifier without the secret ever touching the server.
+//
+//   node plugins/webpanel.js --hash
+//   node plugins/webpanel.js --hash "my chosen secret"
+//
+// Run this on YOUR machine, paste only the printed verifier into the host's
+// config. `plugin` is defined when the plugin host compiles this file, so this
+// branch is unreachable during normal loading.
+// ---------------------------------------------------------------------------
+if (typeof plugin === 'undefined' && require.main === module) {
+  const args = process.argv.slice(2);
+
+  if (!args.includes('--hash')) {
+    process.stdout.write(
+      [
+        'webpanel — plugin management UI for mulebot.',
+        '',
+        'This file is a plugin; it is loaded by the bot, not run directly.',
+        'The one thing it does standalone is generate a credential verifier:',
+        '',
+        '  node plugins/webpanel.js --hash                 generate a random secret',
+        '  node plugins/webpanel.js --hash "your secret"   use one you chose',
+        '',
+      ].join('\n'),
+    );
+    process.exit(0);
+  }
+
+  const index = args.indexOf('--hash');
+  const supplied = args[index + 1];
+  const generated = !supplied;
+  const secret = supplied || crypto.randomBytes(24).toString('base64url');
+
+  if (supplied && supplied.length < 12) {
+    process.stdout.write(
+      `\nThat secret is ${supplied.length} characters. Use at least 12 — the verifier is\n` +
+        'deliberately slow to derive, but a short secret is still guessable offline.\n\n',
+    );
+    process.exit(1);
+  }
+
+  const started = Date.now();
+  const verifierString = makeVerifier(secret);
+  const took = Date.now() - started;
+
+  process.stdout.write(
+    [
+      '',
+      generated ? 'Generated secret (this is what you type into the panel):' : 'Your secret:',
+      '',
+      `  ${secret}`,
+      '',
+      'Verifier for the host (this is all the server ever stores):',
+      '',
+      `  ${verifierString}`,
+      '',
+      'Put it in plugins/plugins.json:',
+      '',
+      '  { "config": { "webpanel": {',
+      `      "tokenHash": "${verifierString}",`,
+      '      "port": 8787,',
+      '      "host": "127.0.0.1"',
+      '  } } }',
+      '',
+      'or as an environment variable:',
+      '',
+      `  WEBPANEL_TOKEN_HASH=${verifierString}`,
+      '',
+      `Derivation took ${took}ms with N=${SCRYPT.N} (~${Math.round((128 * SCRYPT.N * SCRYPT.r) / 1024 / 1024)} MB).`,
+      'The secret above is not stored anywhere by this command. Keep it in your',
+      'password manager; the host cannot recover it from the verifier.',
+      '',
+    ].join('\n'),
+  );
+  process.exit(0);
+}
