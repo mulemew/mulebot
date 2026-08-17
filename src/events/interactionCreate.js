@@ -114,9 +114,17 @@ module.exports = {
       // "Restricted to the bot owner" is useless on its own when the reader is
       // the bot owner and the bot simply has not been told. Say what would fix
       // it, and say it differently depending on which case this is.
-      const knowsAnOwner = bot.config.owners.length > 0 || bot.applicationOwners.length > 0;
-      const detail = knowsAnOwner
-        ? ''
+      // Saying nothing more than "restricted to the bot owner" is useless in
+      // both directions: the reader cannot tell whether the bot failed to work
+      // out who owns it, or worked it out and decided it is not them. Which of
+      // those it is changes what they should do, so say which. Other owners'
+      // ids are deliberately not listed - the count answers the question and
+      // whoever is asking is, by definition, not an owner.
+      const known = new Set([...bot.config.owners, ...bot.applicationOwners]);
+      const detail = known.size
+        ? `\n\nYour user ID is \`${interaction.user.id}\`, which is not among the ` +
+          `${known.size} the bot recognises. If this bot is yours, add ` +
+          `\`OWNER_IDS=${interaction.user.id}\` to your environment or \`.env\` and restart.`
         : '\n\nI could not work out who owns this application, and `OWNER_IDS` is not set. ' +
           `Add \`OWNER_IDS=${interaction.user.id}\` to your environment or \`.env\` and restart.`;
 

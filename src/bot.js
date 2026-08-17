@@ -555,12 +555,25 @@ class Bot {
 
       this.applicationOwners = owners.filter(Boolean).map(String);
 
-      if (this.applicationOwners.length && !this.config.owners.length) {
-        this.log.info(
-          `owner commands are available to the application owner (${this.applicationOwners.join(', ')}) — ` +
-            'set OWNER_IDS to add more',
+      // Always logged, even when it found nothing and even when OWNER_IDS is
+      // set. This one line is how anyone tells whether owner detection is
+      // running at all - without it, a deployment that quietly kept serving an
+      // older build looks identical to one where the lookup failed.
+      if (this.config.ownersRejected?.length) {
+        this.log.warn(
+          `OWNER_IDS contains ${this.config.ownersRejected.length} value(s) that are not Discord user IDs ` +
+            `and were ignored: ${this.config.ownersRejected.join(', ')}`,
         );
       }
+
+      const all = [...new Set([...this.config.owners, ...this.applicationOwners])];
+      this.log.info(
+        all.length
+          ? `owner commands (/owner, /plugin) are available to ${all.join(', ')} ` +
+            `(${this.applicationOwners.length} from Discord, ${this.config.owners.length} from OWNER_IDS)`
+          : 'owner commands (/owner, /plugin) are available to nobody: Discord reported no ' +
+            'application owner and OWNER_IDS is not set',
+      );
       return this.applicationOwners;
     } catch (e) {
       this.log.warn(`could not determine the application owner: ${e.message}`);

@@ -33,6 +33,28 @@ function list(value) {
 }
 
 /**
+ * Turns a list of user IDs into snowflakes, discarding what cannot be one.
+ *
+ * Every wrong shape fails the same silent way: the id matches nobody, so owner
+ * commands refuse the very person who configured them - and because the bot
+ * still counts itself as having an owner, it cannot tell them anything is
+ * wrong. The shapes that actually turn up are quotes copied out of a config
+ * file and the `<@123>` form left behind by copying a mention. A server or
+ * channel ID pasted by mistake survives this, since every Discord ID is the
+ * same shape; that one is only visible by comparing it with your own.
+ */
+function snowflakes(value) {
+  const kept = [];
+  const rejected = [];
+  for (const entry of list(value)) {
+    const cleaned = entry.replace(/^["']|["']$/g, '').replace(/^<@!?(\d+)>$/, '$1');
+    if (/^\d{17,20}$/.test(cleaned)) kept.push(cleaned);
+    else rejected.push(entry);
+  }
+  return { kept, rejected };
+}
+
+/**
  * Builds the frozen config object.
  * @param {{ rootDir: string, token: string }} opts
  */
@@ -44,6 +66,8 @@ function loadConfig({ rootDir, token }) {
   const pluginsDir = process.env.PLUGINS_DIR
     ? path.resolve(rootDir, process.env.PLUGINS_DIR)
     : path.join(rootDir, 'plugins');
+
+  const ownerIds = snowflakes(process.env.OWNER_IDS || process.env.OWNER_ID);
 
   const cfg = {
     token,
@@ -68,7 +92,8 @@ function loadConfig({ rootDir, token }) {
     guildId: (process.env.GUILD_ID || '').trim(),
 
     // Owners bypass cooldowns and can use /owner commands. Comma separated IDs.
-    owners: list(process.env.OWNER_IDS || process.env.OWNER_ID),
+    owners: ownerIds.kept,
+    ownersRejected: ownerIds.rejected,
 
     // Default locale for guilds that never ran /config language.
     defaultLocale: (process.env.BOT_LANG || 'en').trim(),

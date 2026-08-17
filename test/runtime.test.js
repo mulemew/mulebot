@@ -486,7 +486,7 @@ test('a team-owned application makes every team member an owner', async () => {
   const Bot = require('../src/bot');
   const discord = require('discord.js');
 
-  process.env.OWNER_IDS = '999';
+  process.env.OWNER_IDS = '999888777666555444';
   process.env.PLUGINS_DIR = tempDir('own2-p-');
   process.env.DATA_DIR = tempDir('own2-d-');
   process.env.LOG_LEVEL = 'silent';
@@ -496,14 +496,14 @@ test('a team-owned application makes every team member an owner', async () => {
   await bot.init();
 
   bot.client.application = {
-    fetch: async () => ({ owner: { members: new Map([['a', { id: '111' }], ['b', { id: '222' }]]) } }),
+    fetch: async () => ({ owner: { members: new Map([['a', { id: '111222333444555666' }], ['b', { id: '222333444555666777' }]]) } }),
   };
   await bot.resolveApplicationOwners();
 
-  assert.equal(bot.isOwner('111'), true, 'team members count');
-  assert.equal(bot.isOwner('222'), true);
-  assert.equal(bot.isOwner('999'), true, 'and OWNER_IDS still adds to them rather than replacing them');
-  assert.equal(bot.isOwner('333'), false);
+  assert.equal(bot.isOwner('111222333444555666'), true, 'team members count');
+  assert.equal(bot.isOwner('222333444555666777'), true);
+  assert.equal(bot.isOwner('999888777666555444'), true, 'and OWNER_IDS still adds to them rather than replacing them');
+  assert.equal(bot.isOwner('333444555666777888'), false);
 
   await bot.shutdown();
   delete process.env.OWNER_IDS;
@@ -860,4 +860,79 @@ test('a memory limit on an ancestor cgroup is found, not just the root', () => {
   const hroot = tempDir('cg-h-');
   fs.writeFileSync(path.join(hroot, 'memory.max'), 'max');
   assert.equal(cache.containerMemoryLimitMb({ root: hroot, selfCgroup: cproc }), null);
+});
+
+test('the owner refusal distinguishes "who are you" from "who am I"', async () => {
+  const handler = require('../src/events/interactionCreate');
+
+  const attempt = async ({ owners, applicationOwners }) => {
+    const bot = fakeBotForDispatch();
+    bot.config.owners = owners;
+    bot.applicationOwners = applicationOwners;
+    bot.isOwner = () => false;
+    bot.registry = {
+      get: () => ({ data: { name: 'plugin' }, ownerOnly: true, userPerms: [], botPerms: [], cooldown: 0, uses: 0, execute: async () => {} }),
+    };
+
+    let said = '';
+    await handler.execute(bot, {
+      createdTimestamp: Date.now(),
+      user: { id: '424242', tag: 'a#1' },
+      guildId: null,
+      channelId: 'c',
+      commandName: 'plugin',
+      isAutocomplete: () => false,
+      isButton: () => false,
+      isAnySelectMenu: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => true,
+      inGuild: () => false,
+      reply: async (p) => {
+        said = p.content;
+      },
+      replied: false,
+      deferred: false,
+    });
+    return said;
+  };
+
+  const unknown = await attempt({ owners: [], applicationOwners: [] });
+  assert.match(unknown, /could not work out who owns/);
+  assert.match(unknown, /OWNER_IDS=424242/, 'the caller can paste their own id straight out of the message');
+
+  const mismatch = await attempt({ owners: [], applicationOwners: ['555'] });
+  assert.match(mismatch, /not among the 1 the bot recognises/);
+  assert.match(mismatch, /OWNER_IDS=424242/);
+  assert.doesNotMatch(mismatch, /555/, "another user's id is not disclosed to a non-owner");
+
+  const both = await attempt({ owners: ['999'], applicationOwners: ['555'] });
+  assert.match(both, /not among the 2 the bot recognises/, 'the two sources are counted together');
+});
+
+test('OWNER_IDS survives the shapes people actually paste', () => {
+  const { loadConfig } = require('../src/core/config');
+  const load = (value) => {
+    process.env.OWNER_IDS = value;
+    return loadConfig({ rootDir: path.join(__dirname, '..'), token: 'x.y.z' });
+  };
+
+  const id = '123456789012345678';
+
+  // Quotes copied out of a config file, and the <@id> form left behind by
+  // copying a mention. Both used to be stored verbatim, match nobody, and still
+  // count as "this bot has an owner" - so the refusal could not explain itself.
+  for (const written of [id, `"${id}"`, `'${id}'`, `<@${id}>`, `<@!${id}>`]) {
+    assert.deepEqual(load(written).owners, [id], `should accept ${written}`);
+  }
+
+  assert.deepEqual(load(`${id},987654321098765432`).owners, [id, '987654321098765432']);
+  assert.deepEqual(load(`${id} 987654321098765432`).owners, [id, '987654321098765432']);
+
+  // Anything that cannot be an id is dropped and reported rather than kept.
+  const bad = load(`your_user_id_here, ${id}`);
+  assert.deepEqual(bad.owners, [id]);
+  assert.deepEqual(bad.ownersRejected, ['your_user_id_here']);
+
+  assert.deepEqual(load('').owners, []);
+  process.env.OWNER_IDS = '';
 });
