@@ -232,3 +232,52 @@ test('the log ring buffer cannot grow without bound', () => {
   // The newest entry must be retained; it is the oldest that gets dropped.
   assert.match(buffer.items[buffer.items.length - 1].msg, /line 1999/);
 });
+
+// ---------------------------------------------------------------------------
+test('the invite link asks for what the commands actually need', () => {
+  const perms = require('../src/util/perms');
+  const { PermissionFlagsBits } = require('discord.js');
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  // Collect every permission the commands declare as botPerms, then check the
+  // invite covers all of them. The regression this guards: /botinfo carried a
+  // hardcoded integer that had drifted out of sync, so following the bot's own
+  // invite link produced a bot missing Manage Messages, Manage Roles and
+  // Manage Channels — and half the features answered "I am missing X".
+  const declared = new Set();
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.js')) {
+        const source = fs.readFileSync(full, 'utf8');
+        // Only the botPerms arrays: userPerms are checked on the invoker.
+        for (const block of source.matchAll(/botPerms:\s*\[([^\]]*)\]/g)) {
+          for (const m of block[1].matchAll(/PermissionFlagsBits\.(\w+)/g)) declared.add(m[1]);
+        }
+      }
+    }
+  };
+  walk(path.join(__dirname, '..', 'src', 'commands'));
+
+  assert.ok(declared.size > 0, 'no botPerms were found to check against');
+
+  for (const name of declared) {
+    assert.ok(
+      (perms.REQUIRED_PERMISSIONS_BITS & PermissionFlagsBits[name]) !== 0n,
+      `a command declares botPerms ${name} but the invite link does not request it`,
+    );
+  }
+
+  // And the reverse direction: nothing dangerous crept in.
+  for (const forbidden of ['Administrator', 'ManageGuild', 'MentionEveryone', 'ManageWebhooks']) {
+    assert.equal(
+      (perms.REQUIRED_PERMISSIONS_BITS & PermissionFlagsBits[forbidden]) === 0n,
+      true,
+      `the invite link must not request ${forbidden}`,
+    );
+  }
+
+  assert.match(perms.inviteUrl('123'), /client_id=123.*scope=bot%20applications\.commands/);
+});

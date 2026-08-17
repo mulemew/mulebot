@@ -3,6 +3,7 @@
 const { SlashCommandBuilder, MessageFlags, version: djsVersion } = require('discord.js');
 const embeds = require('../../util/embeds');
 const components = require('../../util/components');
+const perms = require('../../util/perms');
 const { formatDuration, fullTimestamp } = require('../../util/time');
 const { number, truncate, table, codeBlock } = require('../../util/text');
 const { LEVELS, buffer: logBuffer } = require('../../core/logger');
@@ -271,7 +272,9 @@ const botinfo = {
         { name: 'Features loaded', value: s.features.join(', ') },
       );
 
-    const invite = `https://discord.com/api/oauth2/authorize?client_id=${user.id}&permissions=1376542187110&scope=bot%20applications.commands`;
+    // Derived from the permissions the commands actually require, so it
+    // cannot drift from them again.
+    const invite = perms.inviteUrl(user.id);
     return ctx.send({
       embeds: [embed],
       components: [components.linkRow([{ label: 'Invite me', url: invite, emoji: '➕' }])],

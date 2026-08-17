@@ -11,6 +11,65 @@ const { PermissionFlagsBits, PermissionsBitField } = require('discord.js');
  * is the difference between a fixed setup and a support ticket.
  */
 
+/**
+ * Every permission the bot needs to do its job, and nothing else.
+ *
+ * This is the single source for the invite link. It used to be a hardcoded
+ * integer in /botinfo, which had drifted: it was missing eight permissions the
+ * commands actually require - Manage Messages for /purge, Manage Roles for
+ * reaction roles and level rewards, Manage Channels for tickets and /lock,
+ * Manage Nicknames for /nick, Manage Threads for tickets - so anyone inviting
+ * the bot with that link hit "I am missing the X permission" on half the
+ * features. It also asked for six it never uses, including Manage Server and
+ * Mention Everyone, which is exactly the kind of over-broad request that makes
+ * an admin refuse the invite.
+ *
+ * Deliberately absent: Administrator (never appropriate to request),
+ * Mention Everyone, Manage Server, Manage Webhooks, Manage Emojis. Commands
+ * that check those check them on the *invoker*, not on the bot.
+ */
+const REQUIRED_PERMISSIONS = [
+  // Baseline: be able to see a channel and answer in it.
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.SendMessagesInThreads,
+  PermissionFlagsBits.EmbedLinks,
+  PermissionFlagsBits.AttachFiles,
+  PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.AddReactions,
+  PermissionFlagsBits.UseExternalEmojis,
+
+  // Moderation.
+  PermissionFlagsBits.ManageMessages,
+  PermissionFlagsBits.KickMembers,
+  PermissionFlagsBits.BanMembers,
+  PermissionFlagsBits.ModerateMembers,
+  PermissionFlagsBits.ManageNicknames,
+
+  // Roles: reaction-role panels, level rewards, autorole, /role.
+  PermissionFlagsBits.ManageRoles,
+
+  // Channels: tickets, /lock, /slowmode.
+  PermissionFlagsBits.ManageChannels,
+  PermissionFlagsBits.CreatePublicThreads,
+  PermissionFlagsBits.ManageThreads,
+
+  // Voice moderation.
+  PermissionFlagsBits.MuteMembers,
+  PermissionFlagsBits.MoveMembers,
+];
+
+/** The bitfield for the invite URL. */
+const REQUIRED_PERMISSIONS_BITS = REQUIRED_PERMISSIONS.reduce((a, b) => a | b, 0n);
+
+/** Builds the OAuth2 invite URL for an application id. */
+function inviteUrl(clientId) {
+  return (
+    `https://discord.com/api/oauth2/authorize?client_id=${clientId}` +
+    `&permissions=${REQUIRED_PERMISSIONS_BITS}&scope=bot%20applications.commands`
+  );
+}
+
 /** Human names for the permission bits the bot actually asks for. */
 const PERMISSION_NAMES = {
   [PermissionFlagsBits.Administrator]: 'Administrator',
@@ -188,6 +247,9 @@ function hierarchyReport(guild) {
 
 module.exports = {
   PERMISSION_NAMES,
+  REQUIRED_PERMISSIONS,
+  REQUIRED_PERMISSIONS_BITS,
+  inviteUrl,
   names,
   missing,
   has,
