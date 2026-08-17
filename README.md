@@ -18,10 +18,10 @@ hosting panel, set `DISCORD_TOKEN` as a startup variable instead.
 
 ## Minimum configuration
 
-`.env.example` lists 44 environment variables. **You need one, or three on a
-small host.** Everything else has a working default, and all per-server
-behaviour is configured inside Discord with `/config` — not with environment
-variables.
+`.env.example` lists 44 environment variables. **You need one**, on a 256 MB
+host as much as on a large one. Everything else has a working default, and all
+per-server behaviour is configured inside Discord with `/config` — not with
+environment variables.
 
 | Host | What to set |
 |---|---|
