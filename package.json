@@ -4,10 +4,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test test/unit.test.js test/plugins.test.js test/runtime.test.js",
+    "test": "node --test test/unit.test.js test/plugins.test.js test/runtime.test.js test/connection.test.js",
     "test:unit": "node --test test/unit.test.js",
     "test:plugins": "node --test test/plugins.test.js",
-    "test:runtime": "node --test test/runtime.test.js"
+    "test:runtime": "node --test test/runtime.test.js",
+    "test:connection": "node --test test/connection.test.js"
   },
   "keywords": [
     "discord",

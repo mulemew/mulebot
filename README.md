@@ -68,6 +68,7 @@ src/core/
   i18n.js                English and 简体中文 strings
 
   plugins.js             plugin host: load, run, unload, hot-reload
+  archive.js             zip and tar.gz readers for plugin bundles
 
 src/util/                time, text, random, embeds, perms, pager, components, mathexpr
 src/data/                trivia bank, word lists, shop items, job flavour, colours, codecs
@@ -77,7 +78,7 @@ src/events/              gateway event handlers
 src/commands/            slash commands, grouped by category
 
 plugins/                 drop .js files here — see plugins/README.md
-test/                    62 tests: pure logic, plugin lifecycle, runtime limits
+test/                    70 tests: pure logic, plugins, runtime limits, gateway resilience
 ```
 
 Run the tests with `npm test` (Node's built-in runner, no dev dependencies).
@@ -223,6 +224,14 @@ grow the ring buffer beyond its cap.
 ## Design notes
 
 A few decisions that are load-bearing, so they do not get undone by accident:
+
+**A dead gateway ends the process, it does not linger.** Discord going away is
+not a crash — the danger is the opposite. Without handlers for the connection
+events the process stays alive with no gateway, does nothing, and never exits,
+so no supervisor restarts it. Recoverable drops are logged and left to
+discord.js to retry; an unrecoverable one (token reset, application deleted,
+intent revoked) flushes state and exits non-zero so the supervisor takes over,
+and the next start reports exactly which it was.
 
 **Privileged intents degrade, they do not fail.** Login walks down a ladder of
 intent sets. If `SERVER MEMBERS` or `MESSAGE CONTENT` is switched off in the
