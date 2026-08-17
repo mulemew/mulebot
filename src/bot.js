@@ -386,14 +386,23 @@ class Bot {
         `${p.detectedLimitMb ? `container limit ${p.detectedLimitMb} MB` : `host has ${p.totalMemoryMb} MB`}`,
     );
 
-    if (heapLimitMb > availableMb * 0.9) {
+    const heap = require('./core/heap');
+
+    if (process.env[heap.GUARD]) {
+      this.log.info(`heap capped at ${heapLimitMb} MB to fit the ${availableMb} MB limit`);
+    } else if (heapLimitMb > availableMb * 0.9) {
+      // Reaching here means the autosizer declined. Say why, because the two
+      // reasons need opposite responses: a limit it could not see is something
+      // only the operator can supply, whereas an explicit opt-out is working
+      // exactly as asked.
       this.log.warn(
         `V8 will grow its heap to ${heapLimitMb} MB but only ~${availableMb} MB is available. ` +
           'It will not collect aggressively before the host kills the process.',
       );
-      const suggested = Math.max(64, Math.floor(availableMb * 0.55));
-      this.log.warn(`Start the bot with:  node --max-old-space-size=${suggested} index.js`);
-      this.log.warn(`or set:  NODE_OPTIONS="--max-old-space-size=${suggested}"`);
+      this.log.warn(`  reason it was not fixed automatically: ${heap.decide().reason}`);
+      const suggested = heap.targetFor(availableMb);
+      this.log.warn(`  to set it by hand:  node --max-old-space-size=${suggested} index.js`);
+      this.log.warn(`  or:  NODE_OPTIONS="--max-old-space-size=${suggested}"`);
     }
 
     if (p.meta.tradeoffs?.length) {

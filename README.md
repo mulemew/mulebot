@@ -502,16 +502,40 @@ the process was unresponsive for 2400ms
 
 Common causes, in the order worth checking:
 
-1. **`--max-old-space-size` not set on a memory-limited host.** V8 sizes its
-   heap from *host* RAM, so in a 256 MB container it plans for gigabytes and
-   does not collect until far past what the container has. The bot prints the
-   exact flag to use at boot; that warning is not decorative.
+1. **An oversized V8 heap.** The bot handles this itself — see *Heap sizing*
+   below — but check the boot log for a line saying it declined to.
 2. **A free tier that idles the container.** The first command after a quiet
    period pays for the wake-up. Nothing in the bot can fix this.
 3. **A shared vCPU out of burst credit.**
 
 `/owner stats` reports the worst stall since boot. Anything approaching 3000 ms
 there means commands will fail intermittently no matter what they do.
+
+### Heap sizing
+
+V8 chooses its maximum heap from the **host's** physical memory. A cgroup limit
+is invisible to it before Node 20.3, and only partly visible after — so in a
+256 MB container on a big machine it plans for about 4 GB, feels no pressure,
+and either gets OOM-killed or stalls long enough to lose interactions.
+
+The only cure is `--max-old-space-size`, which V8 reads before any JavaScript
+runs. No config file can set it, `.env` included, and plenty of hosts give you
+a repository and nothing else — no environment variables, no editable startup
+command. So the bot re-launches itself once, with the flag:
+
+```
+[heap] V8 planned a 4144 MB heap inside a 256 MB limit.
+       Restarting with --max-old-space-size=140 ...
+```
+
+On Node 22.15+ this uses `execve`: same process, same pid, nothing extra
+resident. On older versions it costs a ~45 MB supervisor process, which is
+deducted from the heap budget rather than ignored — which is why the same
+container gets 140 MB on new Node and 116 MB on old. **Upgrading Node to 22.15
+or newer gets that 45 MB back.**
+
+It only acts when a container limit is actually detected, the limit is under
+1 GB, and nobody set the flag themselves. `HEAP_AUTOSIZE=false` turns it off.
 
 ### Every command answers twice, or logs "already answered by somebody else"
 

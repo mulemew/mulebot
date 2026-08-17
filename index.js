@@ -24,6 +24,22 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Before anything else, and before anything heavy is loaded: V8 sizes its heap
+// from host memory and cannot see a container limit, so on a small host it plans
+// for gigabytes it does not have. --max-old-space-size only works if it is set
+// before the process starts, which no config file can do - so the process
+// re-launches itself once with the right value. See src/core/heap.js for the
+// conditions; on an ordinary machine this is a few microseconds and a no-op.
+// Where execve is available this never returns - the process image is replaced
+// and the file starts again from the top with the flag applied. Where it is not,
+// a child was started to be the real bot, and this process is now only a
+// supervisor forwarding signals to it: it must not go on to start a second bot,
+// hence the return. (Top-level return is legal here; a CommonJS file is a
+// function body.)
+if (require('./src/core/heap').autosize({ log: (line) => process.stdout.write(line + '\n') }).relaunched) {
+  return;
+}
+
 let dotenvLoaded = false;
 try {
   require('dotenv').config({ quiet: true });

@@ -719,3 +719,85 @@ test('the event loop sampler records the worst stall it sees', async () => {
 
   await bot.shutdown();
 });
+
+// ---------------------------------------------------------------------------
+// heap autosizing
+// ---------------------------------------------------------------------------
+//
+// V8 reads host memory and cannot see a cgroup limit, so on a small container it
+// plans a heap several times larger than the container. The flag that fixes it
+// is only readable at process start, which is why the bot re-launches itself.
+// Re-launching is drastic, so the conditions are tested one at a time.
+
+test('a small container limit triggers a resize', () => {
+  const heap = require('../src/core/heap');
+  const v = heap.decide({ limitMb: 256, env: {}, execArgv: [], plannedHeapMb: 4144, supervised: false });
+
+  assert.equal(v.resize, true);
+  assert.equal(v.targetMb, 140, '55% of 256 MB, matching the figure the boot warning used to print');
+  assert.match(v.reason, /4144 MB heap inside a 256 MB limit/);
+});
+
+test('the supervisor is charged against the heap when execve is unavailable', () => {
+  const heap = require('../src/core/heap');
+  const base = { limitMb: 256, env: {}, execArgv: [], plannedHeapMb: 4144 };
+
+  const replaced = heap.decide({ ...base, supervised: false }).targetMb;
+  const supervised = heap.decide({ ...base, supervised: true }).targetMb;
+
+  assert.equal(replaced, 140);
+  assert.equal(supervised, 116, '55% of what is left after the ~45 MB parent, not of the full 256');
+  assert.ok(
+    supervised + heap.SUPERVISOR_MB < 256,
+    'the heap plus the process that is already resident must fit inside the container',
+  );
+});
+
+test('nothing is second-guessed without a reason', () => {
+  const heap = require('../src/core/heap');
+  const cases = [
+    [{ limitMb: null, env: {}, execArgv: [], plannedHeapMb: 4144 }, /not running under a memory limit/],
+    [{ limitMb: 2048, env: {}, execArgv: [], plannedHeapMb: 4144 }, /roomy enough/],
+    [{ limitMb: 256, env: {}, execArgv: [], plannedHeapMb: 140 }, /already plans 140 MB/],
+    [{ limitMb: 16, env: {}, execArgv: [], plannedHeapMb: 4144 }, /not plausible/],
+    [{ limitMb: 256, env: { HEAP_AUTOSIZE: 'false' }, execArgv: [], plannedHeapMb: 4144 }, /disabled by/],
+  ];
+  for (const [input, expected] of cases) {
+    const v = heap.decide(input);
+    assert.equal(v.resize, false, `should not resize: ${expected}`);
+    assert.match(v.reason, expected);
+  }
+});
+
+test('an explicit --max-old-space-size is never overridden', () => {
+  const heap = require('../src/core/heap');
+  const base = { limitMb: 256, plannedHeapMb: 4144 };
+
+  for (const input of [
+    { ...base, env: {}, execArgv: ['--max-old-space-size=200'] },
+    { ...base, env: { NODE_OPTIONS: '--max-old-space-size=200' }, execArgv: [] },
+    { ...base, env: { NODE_OPTIONS: '--enable-source-maps --max_old_space_size=200' }, execArgv: [] },
+  ]) {
+    const v = heap.decide(input);
+    assert.equal(v.resize, false, 'an operator who set the flag has already decided');
+    assert.match(v.reason, /already set/);
+  }
+});
+
+test('the guard makes re-launching a one-time thing', () => {
+  const heap = require('../src/core/heap');
+  // The re-launched process sees the same small limit and the same reasons to
+  // act; only the guard stops it looping forever.
+  const v = heap.decide({ limitMb: 256, env: { [heap.GUARD]: '140' }, execArgv: [], plannedHeapMb: 140 });
+  assert.equal(v.resize, false);
+  assert.match(v.reason, /already sized/);
+});
+
+test('the re-launch keeps the arguments it was given', () => {
+  const heap = require('../src/core/heap');
+  const args = heap.relaunchArgs(140, {
+    execArgv: ['--enable-source-maps'],
+    argv: ['/usr/bin/node', '/app/index.js', '--token=abc'],
+  });
+  assert.deepEqual(args, ['--max-old-space-size=140', '--enable-source-maps', '/app/index.js', '--token=abc']);
+});
