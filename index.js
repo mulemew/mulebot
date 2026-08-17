@@ -213,11 +213,19 @@ process.on('uncaughtException', (e) => bootLog('[UNCAUGHT EXCEPTION]', e));
   bootLog(`Interactive TTY:   ${process.stdin.isTTY ? 'yes' : 'no'}`);
   bootLog('--------------------------------------------------');
 
-  // Node 25 is a non-LTS release; discord.js is validated mainly against LTS.
   const major = Number(process.version.replace(/^v/, '').split('.')[0]);
   if (major < 18) {
     bootLog(`[FATAL] Node ${major} is too old. discord.js v14 needs Node 18 or newer.`);
     process.exit(1);
+  }
+
+  // package.json asks for 22.15+, but a host that ignores "engines" will happily
+  // run this on 18. It works - it just costs a whole extra process, so the cost
+  // is stated here rather than left to be discovered in a memory graph.
+  if (typeof process.execve !== 'function' && process.platform !== 'win32') {
+    bootLog(`[WARN] Node ${process.version} predates process.execve (added in 22.15).`);
+    bootLog('       On a memory-limited host the bot must run itself as a child process to');
+    bootLog('       cap the V8 heap, which costs about 45 MB. Node 22.15+ avoids that.');
   }
   if (major % 2 !== 0) {
     bootLog(`[WARN] Node ${major} is an odd-numbered, non-LTS release. If you hit odd runtime`);

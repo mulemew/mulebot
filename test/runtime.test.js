@@ -823,3 +823,41 @@ test('the heap opt-out is readable from .env, where it has to be', () => {
 
   assert.equal(heap.envFileOptOut([path.join(dir, 'nope.env')]), false, 'a missing file is not an error');
 });
+
+test('a memory limit on an ancestor cgroup is found, not just the root', () => {
+  const cache = require('../src/core/cache');
+  const root = tempDir('cg-root-');
+  const proc = tempDir('cg-proc-');
+  const selfCgroup = path.join(proc, 'cgroup');
+
+  const write = (rel, value) => {
+    fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), value);
+  };
+
+  // What a systemd service looks like: unlimited at the root, capped on the
+  // unit. Reading only the root - as this used to - reports no limit at all.
+  write('memory.max', 'max');
+  write('system.slice/memory.max', 'max');
+  write('system.slice/bot.service/memory.max', String(256 * 1024 * 1024));
+  fs.writeFileSync(selfCgroup, '0::/system.slice/bot.service\n');
+
+  assert.equal(cache.containerMemoryLimitMb({ root, selfCgroup }), 256);
+
+  // When several levels are capped the binding one is the smallest, wherever
+  // in the chain it sits.
+  write('system.slice/memory.max', String(128 * 1024 * 1024));
+  assert.equal(cache.containerMemoryLimitMb({ root, selfCgroup }), 128, 'the tightest ancestor wins');
+
+  // A container sees its limit at the root of its own namespace.
+  const croot = tempDir('cg-c-');
+  fs.writeFileSync(path.join(croot, 'memory.max'), String(512 * 1024 * 1024));
+  const cproc = path.join(tempDir('cg-cp-'), 'cgroup');
+  fs.writeFileSync(cproc, '0::/\n');
+  assert.equal(cache.containerMemoryLimitMb({ root: croot, selfCgroup: cproc }), 512);
+
+  // An uncapped host reports nothing rather than guessing.
+  const hroot = tempDir('cg-h-');
+  fs.writeFileSync(path.join(hroot, 'memory.max'), 'max');
+  assert.equal(cache.containerMemoryLimitMb({ root: hroot, selfCgroup: cproc }), null);
+});

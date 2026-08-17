@@ -8,12 +8,10 @@
 # Edit User, WorkingDirectory and the memory numbers to match your host.
 # The two memory settings below are the whole point of this file:
 #
-#   MemoryMax    a hard cgroup ceiling. The bot reads it and picks its cache
-#                profile from it, so setting this is also what makes the bot
-#                configure itself.
-#   NODE_OPTIONS caps the V8 heap. Without it V8 sizes the heap from *host*
-#                memory, never collects under pressure, and gets OOM-killed
-#                with no stack trace. Use roughly 55% of MemoryMax.
+#   MemoryMax    a hard cgroup ceiling, and the whole of the memory
+#                configuration. The bot finds it through its own cgroup - not
+#                the machine's - and sizes both the V8 heap and its caches from
+#                it. Change this line alone and the rest follows.
 
 [Unit]
 Description=Discord Bot
@@ -32,7 +30,6 @@ WorkingDirectory=/opt/discord-bot
 # appears in `systemctl show` output or the journal.
 EnvironmentFile=/opt/discord-bot/.env
 Environment=NODE_ENV=production
-Environment=NODE_OPTIONS=--max-old-space-size=140
 
 ExecStart=/usr/bin/node index.js
 

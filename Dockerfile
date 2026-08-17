@@ -29,11 +29,10 @@ RUN mkdir -p /app/data && chown -R node:node /app
 USER node
 
 ENV NODE_ENV=production
-# Cap the V8 heap. Without this, V8 sizes its heap from HOST memory even inside
-# a 256 MB container, never collects under pressure, and the container is
-# OOM-killed with no stack trace. Roughly 55% of --memory.
-ENV NODE_OPTIONS=--max-old-space-size=140
-# Leave MEMORY_PROFILE unset: the bot reads the cgroup limit and decides.
+# No NODE_OPTIONS and no MEMORY_PROFILE on purpose. The bot reads the cgroup
+# limit at boot and sizes both the V8 heap and its caches from it, so this image
+# is correct at any --memory you run it with. Hardcoding a heap size here would
+# only be right for one of them.
 
 VOLUME ["/app/data"]
 

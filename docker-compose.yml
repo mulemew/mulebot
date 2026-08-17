@@ -14,10 +14,9 @@ services:
       # Optional. Leave unset to register commands globally.
       GUILD_ID: ${GUILD_ID:-}
       OWNER_IDS: ${OWNER_IDS:-}
-      # Roughly 55% of the limit below. Without it V8 plans for host memory.
-      NODE_OPTIONS: --max-old-space-size=140
 
-    # 256 MB hard ceiling -> the bot auto-selects its "low" cache profile.
+    # 256 MB hard ceiling. This single line is the whole memory configuration:
+    # the bot reads it from the cgroup and sizes its V8 heap and caches to fit.
     mem_limit: 256m
     mem_reservation: 128m
     cpus: 1.0

@@ -190,25 +190,58 @@ function detectProfile() {
  * Reads the cgroup memory limit, v2 then v1. Returns null when unlimited or
  * unreadable (any non-Linux host, for a start).
  */
-function containerMemoryLimitMb() {
+function containerMemoryLimitMb({ root = '/sys/fs/cgroup', selfCgroup = '/proc/self/cgroup' } = {}) {
   const fs = require('node:fs');
-  const candidates = [
-    '/sys/fs/cgroup/memory.max', // cgroup v2
-    '/sys/fs/cgroup/memory/memory.limit_in_bytes', // cgroup v1
-  ];
-  for (const file of candidates) {
+
+  const readLimit = (file) => {
+    let raw;
     try {
-      const raw = fs.readFileSync(file, 'utf8').trim();
-      if (raw === 'max') return null;
-      const bytes = Number(raw);
-      // v1 reports a nonsense huge number when unlimited.
-      if (!Number.isFinite(bytes) || bytes <= 0 || bytes > 1024 ** 4) continue;
-      return Math.round(bytes / 1024 / 1024);
+      raw = fs.readFileSync(file, 'utf8').trim();
     } catch {
-      /* not present on this host */
+      return null; // absent, which is the normal case for most of these paths
     }
+    if (raw === 'max') return null;
+    const bytes = Number(raw);
+    // cgroup v1 reports a nonsense huge number rather than a word when
+    // unlimited, so anything past a terabyte means "no limit" too.
+    if (!Number.isFinite(bytes) || bytes <= 0 || bytes > 1024 ** 4) return null;
+    return bytes;
+  };
+
+  const files = [];
+
+  // A container gets its own cgroup namespace, so the limit sits at the root of
+  // what it can see. A systemd service does not: it lives at
+  // /system.slice/<unit>, and reading the root there answers for the whole
+  // machine - which is why MemoryMax= used to go unnoticed entirely.
+  files.push(`${root}/memory.max`, `${root}/memory/memory.limit_in_bytes`);
+
+  try {
+    for (const line of fs.readFileSync(selfCgroup, 'utf8').split('\n')) {
+      // v2: "0::/system.slice/bot.service"   v1: "9:memory:/system.slice/..."
+      const parts = line.split(':');
+      if (parts.length < 3) continue;
+      const controller = parts[1];
+      const cgPath = parts.slice(2).join(':');
+      if (!cgPath || cgPath === '/') continue;
+      if (controller !== '' && !controller.split(',').includes('memory')) continue;
+
+      // Walk leaf to root: a limit can be set on any ancestor, and the one that
+      // actually binds is the smallest, so every level has to be considered.
+      const segments = cgPath.split('/').filter(Boolean);
+      for (let i = segments.length; i > 0; i--) {
+        const prefix = segments.slice(0, i).join('/');
+        if (controller === '') files.push(`${root}/${prefix}/memory.max`);
+        else files.push(`${root}/memory/${prefix}/memory.limit_in_bytes`);
+      }
+    }
+  } catch {
+    /* no /proc, e.g. not Linux */
   }
-  return null;
+
+  const limits = files.map(readLimit).filter((b) => b !== null);
+  if (!limits.length) return null;
+  return Math.round(Math.min(...limits) / 1024 / 1024);
 }
 
 /**

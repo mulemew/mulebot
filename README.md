@@ -26,16 +26,16 @@ variables.
 | Host | What to set |
 |---|---|
 | Anything with ≥ 1 GB | `DISCORD_TOKEN` |
-| **256–512 MB** | `DISCORD_TOKEN`, `MEMORY_PROFILE=low`, and `NODE_OPTIONS=--max-old-space-size=140` |
+| **256–512 MB** | `DISCORD_TOKEN` |
 
 ```bash
 cp deploy/env.256mb.example .env    # a ready-made 256 MB config; paste your token
 ```
 
-`MEMORY_PROFILE=low` caps the discord.js caches, which are the only thing that
-grows without bound. `NODE_OPTIONS` caps the V8 heap and **cannot live in
-`.env`** — Node reads it before any code runs. The bot detects when it is
-missing and prints the exact value to use.
+Yes, the token really is all of it, on a 256 MB host too. The two things that
+otherwise need tuning there — the discord.js caches and the V8 heap — are both
+sized from the cgroup limit at boot. `MEMORY_PROFILE` overrides the first if the
+platform exposes no limit to read; the second is covered under *Heap sizing*.
 
 Two more worth knowing about, neither required:
 
@@ -286,7 +286,7 @@ tiers:
 | | Variables | When you need them |
 |---|---|---|
 | **Required** | `DISCORD_TOKEN` | always |
-| **Small hosts** | `MEMORY_PROFILE`, `NODE_OPTIONS` | under ~512 MB |
+| **Small hosts** | `MEMORY_PROFILE` | only if the platform hides its memory limit |
 | **Useful** | `GUILD_ID`, `OWNER_IDS`, `LOG_LEVEL`, `LOG_FILE`, `DATA_DIR` | setup, debugging, volumes |
 | **Knobs** | `SAVE_INTERVAL`, `BACKUP_COUNT`, `SCHEDULER_TICK`, `REGISTER_COMMANDS`, `PLUGIN_*` | tuning, development |
 | **Cosmetic** | `EMBED_COLOR*`, `ACTIVITY*`, `STATUS`, `PREFIX`, `BOT_LANG`, `WELCOME_CHANNEL` | rebranding; most are also per-server via `/config` |
@@ -312,12 +312,26 @@ Per-server behaviour is configured in Discord:
 
 ## Deploying
 
-Node 18+. One dependency. No database server.
+### Requirements
 
-**You do not pass any special command-line flags.** There is exactly one thing
-to set beyond the token on a small host — `NODE_OPTIONS` — and every deployment
-file below already has it. If you forget it, the bot detects the situation at
-boot and prints the exact value to use.
+| | |
+|---|---|
+| **Node** | **22.15 or newer.** Declared in `package.json` `engines`, `.nvmrc` and `.node-version`, so any host that reads one of those installs the right runtime by itself. |
+| Dependencies | One (`discord.js`), plus `dotenv` if you use a `.env` file. |
+| Database | None. |
+| RAM | 256 MB is enough — see *Resource usage*. |
+
+Node 18 and 20 still run the bot, and nothing is disabled on them. The reason
+for the floor is that both lack `process.execve`, so on a memory-limited host
+the bot has to run itself as a **child** process to cap the V8 heap, and that
+supervisor costs ~45 MB of the budget. On 22.15+ the process replaces itself
+instead: same pid, nothing extra resident. The boot log says which one happened.
+
+**You do not pass any special command-line flags, and there is nothing to set
+beyond the token.** The V8 heap used to be the exception; the bot now sizes it
+from the container limit itself, so `NODE_OPTIONS` is no longer needed anywhere.
+See *Heap sizing* under Troubleshooting for what it does and how to switch it
+off.
 
 ### Docker (recommended on a small VPS)
 
@@ -326,7 +340,7 @@ echo "DISCORD_TOKEN=your_token" > .env
 docker compose up -d
 ```
 
-`docker-compose.yml` sets `mem_limit: 256m` and `NODE_OPTIONS`. The bot reads the
+`docker-compose.yml` sets `mem_limit: 256m` and nothing else. The bot reads the
 cgroup limit and selects its `low` cache profile on its own. Container logs are
 capped at 3 × 5 MB. The healthcheck uses the bundled `httpserver` plugin.
 
@@ -339,7 +353,7 @@ sudo systemctl enable --now discord-bot
 journalctl -u discord-bot -f
 ```
 
-Sets `MemoryMax=256M`, `NODE_OPTIONS`, restart-on-failure and a hardened
+Sets `MemoryMax=256M`, restart-on-failure and a hardened
 sandbox. journald rotates the logs, so `LOG_FILE` is unnecessary.
 
 ### PaaS (Railway, Render, Fly.io, Koyeb, Dokploy, Coolify…)
@@ -387,25 +401,24 @@ that you accept losing everything on restart. Plugin installs are treated
 differently: they fall back to a scratch directory automatically, because that
 code can be fetched again — and every install reports when it did so.
 
-**Set the heap ceiling to match the plan.** Add
-`NODE_OPTIONS=--max-old-space-size=<≈55% of plan RAM>`; the Dockerfile's default
-of 140 suits a 256 MB plan. If the platform exposes no cgroup limit the bot can
-read, also set `MEMORY_PROFILE=low`.
+**The heap needs no setting.** It is sized from the cgroup limit at boot. If the
+platform exposes no limit the bot can read, set `MEMORY_PROFILE=low` — the boot
+log says which happened.
 
 Scale to **one instance**. Two instances on the same token both connect to the
 gateway and every command runs twice.
 
 ### Hosting panel (Pterodactyl / Pelican / FeatherPanel), 256 MB plan
 
-Startup command, if the panel lets you set one. Note the `NODE_OPTIONS` prefix —
-setting it inline is the trick that works even on panels with no environment
-variable UI, because the shell applies it to the `node` process:
+Startup command, if the panel lets you set one:
 
 ```
-if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; NODE_OPTIONS="--max-old-space-size=140" node index.js
+if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; node index.js
 ```
 
-That covers the one setting `.env` cannot carry. Everything else goes in `.env`.
+No `NODE_OPTIONS` prefix is needed — the bot caps its own heap. Panels usually
+pin an old Node and ignore `engines`, so pick the **Node 22** egg or image in the
+panel if it offers one; on an older one everything still works, minus ~45 MB.
 
 #### If the panel cannot set environment variables or the startup command
 
@@ -432,33 +445,14 @@ LOG_FILE_KEEP=3
 That is enough. The bot runs, picks tight cache limits, and caps its own log
 files.
 
-**The one setting `.env` cannot carry is `NODE_OPTIONS`.** Node reads it before
-the process starts — before any code, including the code that reads `.env`.
+There is no longer any setting that `.env` cannot carry. The V8 heap used to be
+the exception, because Node reads `NODE_OPTIONS` before any code runs — including
+the code that reads `.env`. The bot now re-launches itself with the right value
+instead, so a panel with nothing but a file manager is fully configurable.
 
-If the panel lets you edit the **startup command**, prefix it there and you are
-done, no environment variable UI needed:
-
-```
-NODE_OPTIONS="--max-old-space-size=140" node index.js
-```
-
-If it allows neither: 
-
-- The bot still runs fine. Measured idle is 76 MB resident with ~18 MB of heap,
-  nowhere near a limit.
-- `MEMORY_PROFILE=low` in `.env` controls the thing that actually grows —
-  discord.js caches — and that is the larger lever by far.
-- What you lose is a safety margin: without a heap ceiling V8 will not collect
-  aggressively under pressure, so a memory spike is likelier to end in an OOM
-  kill than in a slow garbage collection.
-
-If the panel does expose startup variables, set both:
-
-| Variable | Value |
-|---|---|
-| `DISCORD_TOKEN` | your token |
-| `MEMORY_PROFILE` | `low` |
-| `NODE_OPTIONS` | `--max-old-space-size=140` (≈55% of the plan) |
+The one thing worth checking in the panel is the **Node version**: these panels
+pin one and ignore `engines`, and 22.15+ saves the ~45 MB described under
+*Requirements*.
 
 All diagnostics go to **stdout**, never stderr, because these panels stream
 stdout to their console and frequently discard stderr — a diagnostic on stderr
@@ -468,7 +462,7 @@ is a diagnostic nobody reads.
 
 ```bash
 npm install
-NODE_OPTIONS="--max-old-space-size=140" MEMORY_PROFILE=low node index.js
+node index.js
 ```
 
 ### Afterwards
