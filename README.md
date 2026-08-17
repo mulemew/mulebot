@@ -125,8 +125,8 @@ consequential as editing the bot's source. Set `PLUGINS_ENABLED=false` where tha
 is not acceptable.
 
 📖 **Everything else is in [`plugins/README.md`](plugins/README.md)** — the
-context API, dependency handling, persistence modes, native addons, the web
-panel and its credential scheme.
+context API, dependency handling, persistence modes, native addons, native addons and the
+persistence modes.
 
 
 ## Resource usage

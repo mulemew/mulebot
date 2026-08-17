@@ -103,6 +103,12 @@ const plugin = {
         .setDescription('Install an npm package so plugins can require it')
         .addStringOption((o) => o.setName('package').setDescription('e.g. axios, or @scope/name@1.2.3').setRequired(true)),
     )
+    .addSubcommand((s) =>
+      s
+        .setName('remotes')
+        .setDescription('Plugins remembered by URL, and refetched on every start')
+        .addStringOption((o) => o.setName('forget').setDescription('Stop refetching this one on start')),
+    )
     .addSubcommand((s) => s.setName('scan').setDescription('Look for newly added plugin files and load them'))
     .addSubcommand((s) =>
       s
@@ -309,7 +315,7 @@ const plugin = {
       case 'upload': {
         // Discord already authenticated the uploader and this command is
         // owner-only, so the attachment is as trusted as the person running it.
-        // That makes this the safer half of what webpanel.js does: no port, no
+        // No port, no
         // token to leak, no endpoint reachable from the internet.
         const file = ctx.attachmentOpt('file');
         const mode = ctx.str('mode', 'persist');
@@ -473,6 +479,43 @@ const plugin = {
           ].join('\n'),
           { ephemeral: true },
         );
+      }
+
+      case 'remotes': {
+        const forget = ctx.str('forget');
+        if (forget) {
+          if (!host.forgetRemote(forget)) return ctx.fail(`\`${forget}\` is not in the remembered list.`);
+          return ctx.ok(
+            'Forgotten',
+            `\`${forget}\` will not be fetched again on start. If it is running now, it stays until the next restart.`,
+            { ephemeral: true },
+          );
+        }
+
+        const remotes = host.readRemotes();
+        const entries = Object.entries(remotes);
+        if (!entries.length) {
+          return ctx.whisper(
+            'Nothing is remembered by URL. `/plugin install` with mode `memory` records its source here so it can ' +
+              'be fetched again on every start.',
+          );
+        }
+
+        return ctx.whisper({
+          embeds: [
+            embeds
+              .base(
+                'Remembered sources',
+                entries
+                  .map(([n, r]) => {
+                    const state = host.get(n)?.state || 'not loaded';
+                    return `**${n}** — \`${r.mode}\` · ${state}\n${truncate(r.url, 90)}\n*added ${relative(r.at)}*`;
+                  })
+                  .join('\n\n'),
+              )
+              .setFooter({ text: 'Only "memory" plugins are refetched; the rest are on disk already.' }),
+          ],
+        });
       }
 
       case 'scan': {

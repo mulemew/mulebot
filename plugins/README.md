@@ -7,7 +7,6 @@ with `/plugin scan`.
 plugins/
   httpserver.js     standalone script — runs on load, starts a status endpoint
   hello.js          full contract — command, button, storage, scheduled task
-  webpanel.js       browser UI for managing plugins (inert until given a credential)
   plugins.json      optional: disable plugins, pass config
 ```
 
@@ -377,96 +376,3 @@ boundary and this host does not pretend it is.
 Installing a plugin is exactly as consequential as editing the bot's source.
 Only run code you have read or trust. On a host where this directory is not
 exclusively yours, set `PLUGINS_ENABLED=false`.
-
----
-
-## The web panel
-
-`webpanel.js` is a browser UI for everything above: upload a `.js` or an
-archive, install from a URL in any of the three modes, `npm install` a package,
-load / unload / reload / delete, and read the log.
-
-Everything it does is also available as `/plugin` commands in Discord, which
-need no port and no credential of their own — Discord's identity plus the
-owner-only check is the authentication. **Prefer that.** Use the panel when a
-browser is genuinely easier.
-
-It **refuses to start without a credential** — there is no default and no way to
-run it open.
-
-### The secret is never stored on the host
-
-Generate a verifier **on your own machine**:
-
-```bash
-node plugins/webpanel.js --hash                 # generates a random secret
-node plugins/webpanel.js --hash "your secret"   # or hash one you chose
-```
-
-It prints two things: the secret, for your password manager, and a verifier.
-Only the verifier goes on the server:
-
-```json
-{ "config": { "webpanel": {
-    "tokenHash": "scrypt$16384$8$1$<salt>$<hash>",
-    "port": 8787,
-    "host": "127.0.0.1",
-    "allowedIps": ["203.0.113.7"],
-    "sessionHours": 8
-} } }
-```
-
-This matters because a config is more exposed than people expect: a platform's
-variables page, `docker inspect`, a config backup, a support screenshot, a shared
-log. A verifier in any of those is useless. scrypt with N=16384 also makes an
-offline guessing attack expensive rather than instant, which a plain SHA-256 of
-a short secret would not.
-
-**What it does not protect against:** a host that is actively hostile can read
-the running process and does not need your config at all. This defends against
-*incidental* exposure — dumps, backups, screenshots — not against a malicious
-platform. No in-process scheme can.
-
-It also does nothing for transport. Over plain HTTP the secret is visible on the
-wire at login, which is the other reason to prefer an SSH tunnel or TLS.
-
-### The secret crosses the wire once
-
-`POST /api/login` takes the secret and returns a random session token; every
-later request carries the session instead. So the secret is not replayed on each
-call, the browser stores only the session, sessions expire (8 hours by default),
-and a restart invalidates all of them. The slow scrypt derivation runs once per
-login rather than once per request.
-
-A plaintext `"token"` is still accepted for compatibility, and logs a warning
-saying exactly what it exposes.
-
-### The rest of the hardening
-
-Understand what this endpoint is: **remote code execution**. Anyone who reaches
-it and can authenticate owns the host — the Discord token, the data directory,
-the filesystem. It is built to fail closed:
-
-- no credential, a token under 24 characters, or a malformed verifier → the
-  plugin refuses to load, and says which
-- binds `127.0.0.1` unless a host is set explicitly, and unlike `httpserver.js`
-  it does **not** open up just because a platform set `PORT`
-- constant-time comparison, and a uniform delay on a failed login
-- five failed logins blocks that address for 15 minutes; an expired session is
-  not counted as a failure, so it cannot lock you out
-- optional `allowedIps` allow-list on top of the credential
-- uploaded filenames must be a bare `name.js`; traversal, absolute paths and
-  subdirectories are rejected
-- archive entries are validated before extraction, so zip-slip is discarded
-- npm package names are matched against the registry's grammar and passed to
-  `spawn()` as an argument array, never through a shell
-- the page loads no external script, style or font, under a restrictive CSP
-
-If you need it from another machine, prefer a tunnel over exposing it:
-
-```bash
-ssh -L 8787:127.0.0.1:8787 you@your-server
-```
-
-Exposed publicly, the credential is the only thing between the internet and your
-host. If you must, set `allowedIps` as well and put it behind TLS.

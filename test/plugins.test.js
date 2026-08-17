@@ -564,112 +564,14 @@ test('installing from a URL supports disk, once and memory modes', async (t) => 
   await assert.rejects(() => bot.plugins.installFromUrl('nonsense', { name: 'x' }), /valid URL/);
 });
 
-test('the web panel stores a verifier, not the secret, and issues sessions', async (t) => {
+test('httpserver adopts the port a platform injects', async (t) => {
+  // A PaaS routes traffic and health checks to the port it injected, so the
+  // status endpoint has to bind that one, on all interfaces rather than
+  // localhost, or the deployment is marked unhealthy and killed.
   const dir = tempDir('bot-plugins-');
-  const port = takePort();
-  const SECRET = 'a-secret-i-chose-myself';
-
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));
-
-  // Generate the verifier the way a user would: on their own machine, via CLI.
-  const output = require('node:child_process').execSync(
-    `node "${path.join(ROOT, 'plugins', 'webpanel.js')}" --hash "${SECRET}"`,
-    { encoding: 'utf8' },
-  );
-  const verifier = (output.match(/scrypt\$\S+/) || [])[0];
-
-  assert.ok(verifier, 'the CLI should print a verifier');
-  assert.equal(verifier.includes(SECRET), false, 'the verifier must not contain the secret');
-
-  fs.writeFileSync(
-    path.join(dir, 'plugins.json'),
-    JSON.stringify({ config: { webpanel: { tokenHash: verifier, port, host: '127.0.0.1' } } }),
-  );
-
-  // The whole point: nothing on disk reveals a usable credential.
-  const onDisk = fs.readFileSync(path.join(dir, 'plugins.json'), 'utf8');
-  assert.equal(onDisk.includes(SECRET), false, 'the stored config must not contain the secret');
-
-  const bot = await boot(dir);
-  t.after(async () => {
-    await bot.shutdown();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-  await new Promise((r) => setTimeout(r, 400));
-
-  assert.equal(bot.plugins.get('webpanel')?.state, 'loaded', bot.plugins.get('webpanel')?.error?.message);
-
-  const call = (pathname, { method = 'GET', bearer = null, body = null } = {}) =>
-    new Promise((resolve, reject) => {
-      const payload = body ? JSON.stringify(body) : null;
-      const r = http.request(
-        {
-          host: '127.0.0.1',
-          port,
-          path: pathname,
-          method,
-          headers: {
-            ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
-            ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}),
-          },
-        },
-        (res) => {
-          let out = '';
-          res.on('data', (c) => (out += c));
-          res.on('end', () => {
-            let json = {};
-            try {
-              json = JSON.parse(out);
-            } catch {
-              /* not every response is JSON */
-            }
-            resolve({ status: res.statusCode, json });
-          });
-        },
-      );
-      r.on('error', reject);
-      if (payload) r.write(payload);
-      r.end();
-    });
-
-  assert.equal((await call('/api/login', { method: 'POST', body: { secret: 'wrong' } })).status, 401);
-
-  const login = await call('/api/login', { method: 'POST', body: { secret: SECRET } });
-  assert.equal(login.status, 200, 'the right secret should log in');
-  const session = login.json.session;
-  assert.ok(session, 'a session token should be issued');
-  assert.notEqual(session, SECRET, 'the session must not be the secret');
-
-  assert.equal((await call('/api/state', { bearer: session })).status, 200, 'the session should authorise');
-
-  // The secret is not itself a bearer credential: it only works at /api/login.
-  assert.equal((await call('/api/state', { bearer: SECRET })).status, 401, 'the secret must not work as a bearer');
-  assert.equal((await call('/api/state', { bearer: 'x'.repeat(43) })).status, 401, 'a forged session must fail');
-
-  const anon = await call('/api/state');
-  assert.equal(anon.status, 401);
-  assert.equal(anon.json.needsLogin, true, 'the client needs to be told to log in again');
-
-  await call('/api/logout', { method: 'POST', bearer: session });
-  assert.equal((await call('/api/state', { bearer: session })).status, 401, 'logout must invalidate the session');
-});
-
-test('the web panel stays on localhost even when the platform sets PORT', async (t) => {
-  // httpserver deliberately opens up when a PaaS injects PORT, because its
-  // health check comes from outside the container. The panel must NOT copy that:
-  // exposing a status page by accident is untidy, exposing a code execution
-  // endpoint by accident is a compromise.
-  const dir = tempDir('bot-plugins-');
-  const panelPort = takePort();
   const injected = takePort();
 
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));
   fs.copyFileSync(path.join(ROOT, 'plugins', 'httpserver.js'), path.join(dir, 'httpserver.js'));
-  fs.writeFileSync(
-    path.join(dir, 'plugins.json'),
-    // No "host" given for either, so each falls back to its own default.
-    JSON.stringify({ config: { webpanel: { token: 'a-plaintext-token-long-enough', port: panelPort } } }),
-  );
 
   process.env.PORT = String(injected);
   const bot = await boot(dir);
@@ -680,43 +582,13 @@ test('the web panel stays on localhost even when the platform sets PORT', async 
   });
   await new Promise((r) => setTimeout(r, 400));
 
-  const addressOf = (name) => {
-    const owned = bot.plugins.get(name)?.context?.owned?.resources || [];
-    const entry = owned.find((r) => typeof r.resource?.address === 'function' && r.resource.address());
-    return entry ? entry.resource.address() : null;
-  };
+  const owned = bot.plugins.get('httpserver')?.context?.owned?.resources || [];
+  const server = owned.find((r) => typeof r.resource?.address === 'function' && r.resource.address());
+  assert.ok(server, 'the status endpoint should be listening');
 
-  const panel = addressOf('webpanel');
-  assert.ok(panel, 'the panel should be listening');
-  assert.equal(panel.address, '127.0.0.1', 'the panel must stay on localhost despite PORT being set');
-  assert.equal(panel.port, panelPort, 'and must not adopt the injected port');
-
-  const status = addressOf('httpserver');
-  assert.ok(status, 'the status endpoint should be listening');
-  assert.equal(status.address, '0.0.0.0', 'httpserver should open up for the platform health check');
-  assert.equal(status.port, injected, 'and adopt the injected port');
-});
-
-test('the web panel refuses to start without a usable credential', async (t) => {
-  const dir = tempDir('bot-plugins-');
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'webpanel.js'), path.join(dir, 'webpanel.js'));
-
-  const cases = [
-    [{}, /needs a credential/],
-    [{ token: 'short' }, /at least 24/],
-    [{ tokenHash: 'not-a-verifier' }, /not a valid verifier/],
-  ];
-
-  for (const [cfg, expected] of cases) {
-    fs.writeFileSync(path.join(dir, 'plugins.json'), JSON.stringify({ config: { webpanel: cfg } }));
-    const bot = await boot(dir);
-    const plugin = bot.plugins.get('webpanel');
-    assert.equal(plugin.state, 'failed', `${JSON.stringify(cfg)} should refuse to start`);
-    assert.match(plugin.error.message, expected);
-    await bot.shutdown();
-  }
-
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const address = server.resource.address();
+  assert.equal(address.port, injected, 'it must adopt the injected port');
+  assert.equal(address.address, '0.0.0.0', 'and bind all interfaces so the health check can reach it');
 });
 
 test('the bundled example plugins load and behave', async (t) => {
