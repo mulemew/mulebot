@@ -76,6 +76,13 @@ module.exports = [
   {
     name: 'shardError',
     execute(bot, error, shardId) {
+      // "Used disallowed intents" arrives here on every rung of the login
+      // ladder. Reporting it at error level makes a handled, expected step look
+      // like a failure; login() already says what it is doing about it.
+      if (!bot.readyAt) {
+        bot.log.debug(`shard ${shardId} error during login: ${error?.message || error}`);
+        return;
+      }
       bot.counters.errors++;
       bot.log.error(`shard ${shardId} error:`, error);
     },
@@ -87,12 +94,22 @@ module.exports = [
       const code = event?.code;
       const fatal = FATAL_CLOSE_CODES[code];
 
+      // Before the first successful ready, login() owns failure handling: it
+      // walks an intent-fallback ladder that deliberately provokes 4014 and
+      // retries with fewer intents. Exiting here would kill that mid-ladder -
+      // which is exactly what happened when this handler was first written, and
+      // it broke startup for anyone with a privileged intent switched off.
+      if (!bot.readyAt) {
+        bot.log.debug(`shard ${shardId} closed with code ${code ?? 'unknown'} during login; login() will handle it`);
+        return;
+      }
+
       if (fatal) {
         // discord.js will not retry these, so waiting is pointless.
         bot.log.fatal(`shard ${shardId} closed with code ${code}: ${fatal}`);
         if (code === 4014 || code === 4013) {
-          bot.log.fatal('this should have been handled by the intent fallback at login;');
-          bot.log.fatal('if you are seeing it now, an intent was switched off while running.');
+          bot.log.fatal('an intent was switched off in the developer portal while the bot was running.');
+          bot.log.fatal('restarting will pick the largest intent set that is still allowed.');
         }
         bot.log.fatal('exiting — this will not recover on its own.');
         void bot
@@ -138,6 +155,12 @@ module.exports = [
      */
     name: 'invalidated',
     execute(bot) {
+      // Same reasoning as shardDisconnect: during the login ladder, login()
+      // decides what to do next.
+      if (!bot.readyAt) {
+        bot.log.debug('session invalidated during login; login() will handle it');
+        return;
+      }
       bot.log.fatal('the gateway session was invalidated and cannot be resumed.');
       bot.log.fatal('the usual causes are the bot token being reset, or the application being deleted.');
       bot.log.fatal('flushing data and exiting; on restart, login will report exactly which it was.');

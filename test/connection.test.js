@@ -36,7 +36,7 @@ async function boot() {
 }
 
 /** Runs a scenario in a child process so its exit code can be observed. */
-function runScenario(scenario) {
+function runScenario(scenario, { ready = true } = {}) {
   const script = `
     process.env.PLUGINS_DIR = ${JSON.stringify(tempDir('conn-p-'))};
     process.env.DATA_DIR = ${JSON.stringify(tempDir('conn-d-'))};
@@ -47,7 +47,7 @@ function runScenario(scenario) {
     (async () => {
       const bot = new Bot({ token: 'x.y.z', rootDir: ${JSON.stringify(ROOT)}, discord });
       await bot.init();
-      bot.readyAt = Date.now();
+      ${ready ? 'bot.readyAt = Date.now();' : '// deliberately not ready: still inside the login ladder'}
       ${scenario}
       // If nothing exits within a second, the handler did not do its job.
       setTimeout(() => process.exit(42), 1500);
@@ -98,6 +98,24 @@ test('a recoverable disconnect does not end the process', async (t) => {
   assert.doesNotThrow(() => bot.client.emit('shardDisconnect', { code: 1006 }, 0));
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(true, 'still running');
+});
+
+test('a fatal close code during login is left to the intent ladder', () => {
+  // The regression this guards, which shipped and broke real deployments:
+  // login() walks an intent-fallback ladder that deliberately provokes a 4014
+  // "disallowed intents" close and retries with fewer intents. The connection
+  // handlers are attached from the first loadEvents(), so they are live during
+  // that ladder — and exiting on 4014 killed the process mid-fallback, before
+  // the retry that would have succeeded.
+  //
+  // Note readyAt is NOT set here: that is the whole distinction.
+  const result = runScenario(`bot.client.emit('shardDisconnect', { code: 4014 }, 0);`, { ready: false });
+  assert.equal(result.status, 42, `expected the process to survive (42), got ${result.status}\n${result.stderr}`);
+});
+
+test('an invalidated session during login is left to login()', () => {
+  const result = runScenario(`bot.client.emit('invalidated');`, { ready: false });
+  assert.equal(result.status, 42, `expected the process to survive (42), got ${result.status}`);
 });
 
 test('an unrecoverable close code exits non-zero', () => {
