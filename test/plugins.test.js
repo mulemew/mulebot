@@ -732,3 +732,30 @@ test('the bundled example plugins load and behave', async (t) => {
   const notFound = await get(`http://127.0.0.1:${port}/nope`);
   assert.equal(notFound.status, 404);
 });
+
+// ---------------------------------------------------------------------------
+// npm's cache directory
+// ---------------------------------------------------------------------------
+
+test('npm is given a writable cache instead of inheriting a broken HOME', () => {
+  const { PluginHost } = require('../src/core/plugins');
+  const dataDir = tempDir('npmenv-d-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const host = new PluginHost({ config: { dataDir, rootDir: dataDir, pluginsDir: dataDir } }, { dir: dataDir, log });
+
+  const before = process.env.HOME;
+  try {
+    // A container running as a non-root user with no home directory: npm
+    // derives its cache from HOME and dies on mkdir before it fetches anything.
+    process.env.HOME = path.join(dataDir, 'does', 'not', 'exist');
+    const env = host.npmEnv();
+
+    assert.equal(env.npm_config_cache, path.join(dataDir, '.npm'), 'the cache goes beside the data, which is known writable');
+    assert.notEqual(env.HOME, process.env.HOME, 'a HOME that does not exist is not passed through');
+    assert.ok(fs.existsSync(env.HOME), 'whatever HOME is set to must actually exist');
+    assert.equal(env.npm_config_update_notifier, 'false');
+  } finally {
+    if (before === undefined) delete process.env.HOME;
+    else process.env.HOME = before;
+  }
+});

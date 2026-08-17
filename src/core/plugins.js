@@ -974,6 +974,45 @@ class PluginHost {
   }
 
   /**
+   * Environment for a spawned npm.
+   *
+   * npm insists on a cache directory and derives it from HOME. Containers that
+   * run as a non-root user routinely have a HOME that does not exist and cannot
+   * be created - `USER node` in a slim image, or a PaaS assigning an arbitrary
+   * uid - and npm then fails with an ENOENT on mkdir '/home/<user>/.npm' that
+   * names the cache but reads like a network error:
+   *
+   *   Invalid response body while trying to fetch https://registry.npmjs.org/ws:
+   *   ENOENT: no such file or directory, mkdir '/home/node/.npm'
+   *
+   * Pointing the cache somewhere writable is the whole fix. It is chosen the
+   * same way plugin storage is: the data directory when that works, a scratch
+   * directory when it does not.
+   */
+  npmEnv() {
+    const writable = require('./writable');
+    let base = path.join(this.bot.config.dataDir, '.npm');
+
+    if (!writable.check(base).ok) {
+      base = writable.scratchDir('npm-cache');
+      this.log.debug(`npm cache falls back to ${base}; the data directory is not writable`);
+    }
+
+    return {
+      ...process.env,
+      // Both, because npm reads the config variable and some of its own
+      // subprocesses still resolve paths from HOME.
+      npm_config_cache: base,
+      HOME: process.env.HOME && fs.existsSync(process.env.HOME) ? process.env.HOME : path.dirname(base),
+      // A missing update-notifier cache is another way to fail on a read-only
+      // home, and the notice is noise in a bot log regardless.
+      npm_config_update_notifier: 'false',
+      npm_config_fund: 'false',
+      npm_config_audit: 'false',
+    };
+  }
+
+  /**
    * Runs npm with an argument array in `cwd`.
    * Never a shell string, so nothing in the arguments can be a separator.
    */
@@ -981,7 +1020,12 @@ class PluginHost {
     return new Promise((resolve) => {
       const { spawn } = require('node:child_process');
       const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      const child = spawn(command, args, { cwd, shell: false, windowsHide: true });
+      const child = spawn(command, args, {
+        cwd,
+        shell: false,
+        windowsHide: true,
+        env: this.npmEnv(),
+      });
 
       let output = '';
       let settled = false;
