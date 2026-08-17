@@ -801,3 +801,25 @@ test('the re-launch keeps the arguments it was given', () => {
   });
   assert.deepEqual(args, ['--max-old-space-size=140', '--enable-source-maps', '/app/index.js', '--token=abc']);
 });
+
+test('the heap opt-out is readable from .env, where it has to be', () => {
+  const heap = require('../src/core/heap');
+  const dir = tempDir('heapenv-');
+  const file = path.join(dir, '.env');
+
+  // dotenv has not run when this decision is made, so an operator whose host
+  // only lets them edit files would otherwise have no way to switch it off.
+  fs.writeFileSync(file, 'DISCORD_TOKEN=x\nHEAP_AUTOSIZE=false  # too clever by half\n');
+  assert.equal(heap.envFileOptOut([file]), true, 'a trailing comment does not defeat it');
+
+  fs.writeFileSync(file, 'HEAP_AUTOSIZE="false"\n');
+  assert.equal(heap.envFileOptOut([file]), true, 'quotes do not defeat it either');
+
+  fs.writeFileSync(file, 'HEAP_AUTOSIZE=true\n');
+  assert.equal(heap.envFileOptOut([file]), false);
+
+  fs.writeFileSync(file, 'DISCORD_TOKEN=x\n');
+  assert.equal(heap.envFileOptOut([file]), false, 'absent means the default, which is on');
+
+  assert.equal(heap.envFileOptOut([path.join(dir, 'nope.env')]), false, 'a missing file is not an error');
+});

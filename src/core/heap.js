@@ -1,6 +1,8 @@
 'use strict';
 
 const v8 = require('node:v8');
+const fsx = require('node:fs');
+const pathx = require('node:path');
 const { containerMemoryLimitMb } = require('./cache');
 
 /**
@@ -77,6 +79,36 @@ function alreadySet(execArgv, env) {
 }
 
 /**
+ * Reads HEAP_AUTOSIZE out of a .env file.
+ *
+ * dotenv has not run yet and cannot: this decision is made before anything is
+ * loaded, because after V8 has sized its heap the answer no longer matters. But
+ * the hosts this feature exists for are exactly the ones where a file is the
+ * only thing you can change, so the off switch has to work from a file too.
+ * Hence this deliberately tiny reader - one key, no interpolation, no
+ * dependency - rather than making the opt-out unreachable on the machines most
+ * likely to need it.
+ */
+function envFileOptOut(files) {
+  const entry = process.argv[1] ? pathx.dirname(process.argv[1]) : process.cwd();
+  const candidates = files || [pathx.join(process.cwd(), '.env'), pathx.join(entry, '.env')];
+
+  for (const file of candidates) {
+    let text;
+    try {
+      text = fsx.readFileSync(file, 'utf8');
+    } catch {
+      continue; // absent or unreadable is the normal case
+    }
+    const line = text.match(/^[ 	]*HEAP_AUTOSIZE[ 	]*=(.*)$/m);
+    if (!line) continue;
+    const value = line[1].split('#')[0].trim().replace(/^["']|["']$/g, '').toLowerCase();
+    if (value === 'false') return true;
+  }
+  return false;
+}
+
+/**
  * Decides whether to re-launch, and returns the reason either way so the caller
  * can log a single honest line. Pure, so the tests can drive every branch
  * without spawning anything.
@@ -87,11 +119,12 @@ function decide({
   execArgv = process.execArgv,
   plannedHeapMb = Math.round(v8.getHeapStatistics().heap_size_limit / 1024 / 1024),
   supervised = willSupervise(),
+  optedOut = envFileOptOut(),
 } = {}) {
   if (env[GUARD]) {
     return { resize: false, reason: 'already sized', plannedHeapMb, limitMb };
   }
-  if (String(env.HEAP_AUTOSIZE).toLowerCase() === 'false') {
+  if (String(env.HEAP_AUTOSIZE).toLowerCase() === 'false' || optedOut) {
     return { resize: false, reason: 'disabled by HEAP_AUTOSIZE=false', plannedHeapMb, limitMb };
   }
   if (alreadySet(execArgv, env)) {
@@ -240,6 +273,7 @@ module.exports = {
   relaunchArgs,
   targetFor,
   willSupervise,
+  envFileOptOut,
   GUARD,
   CEILING_MB,
   HEAP_FRACTION,
