@@ -5,9 +5,14 @@ with `/plugin scan`.
 
 ```
 plugins/
-  httpserver.js     standalone script — runs on load, starts a status endpoint
-  hello.js          full contract — command, button, storage, scheduled task
+  httpserver.js     standalone script example — starts a status endpoint
+  hello.js          full-contract example — command, button, storage, task
   plugins.json      optional: disable plugins, pass config
+
+Both examples are DISABLED by default, so a fresh install opens no port and
+adds no commands. Enable one with /plugin load, or remove its name from
+"disabled" in plugins.json. Your own plugins are unaffected — anything not
+named there loads normally.
 ```
 
 ---

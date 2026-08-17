@@ -4,7 +4,21 @@
     "'disabled' lists plugin names (the filename without .js) to skip at boot.",
     "'config' is handed to each plugin as plugin.config."
   ],
-  "disabled": [],
+
+  "_why_disabled": [
+    "The two bundled plugins are EXAMPLES, so they ship switched off.",
+    "httpserver would otherwise open port 3000 on a fresh install — a Discord",
+    "bot has no business taking a port nobody asked for, and 3000 collides with",
+    "half the dev tools in existence. hello would otherwise add a /hello command",
+    "to every server the bot is in.",
+    "",
+    "Turn one on by deleting its name below and restarting, or with:",
+    "  /plugin load name:httpserver",
+    "Your own plugins are NOT affected — anything not listed here loads normally."
+  ],
+
+  "disabled": ["httpserver", "hello"],
+
   "config": {
     "httpserver": {
       "port": 3000,

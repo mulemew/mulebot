@@ -564,6 +564,28 @@ test('installing from a URL supports disk, once and memory modes', async (t) => 
   await assert.rejects(() => bot.plugins.installFromUrl('nonsense', { name: 'x' }), /valid URL/);
 });
 
+test('a fresh install opens no port and adds no command', async (t) => {
+  // The bundled plugins are examples and ship disabled. Without that, cloning
+  // this repo and starting it would take port 3000 — which a Discord bot has no
+  // reason to do, and which collides with most dev servers — and would add a
+  // /hello command to every server the bot is in.
+  const bot = await boot(path.join(ROOT, 'plugins'));
+  t.after(async () => {
+    await bot.shutdown();
+  });
+  await new Promise((r) => setTimeout(r, 400));
+
+  const listening = (process._getActiveHandles?.() || []).filter((h) => h.constructor?.name === 'Server');
+  assert.equal(listening.length, 0, `a fresh install opened ${listening.length} port(s)`);
+
+  const fromPlugins = bot.registry.all().filter((c) => String(c.file).startsWith('plugin:'));
+  assert.deepEqual(fromPlugins, [], 'a fresh install registered a command from a plugin');
+
+  const stats = bot.plugins.stats();
+  assert.equal(stats.loaded, 0, 'no example should be loaded by default');
+  assert.ok(stats.disabled >= 2, 'both examples should be listed as disabled, not missing');
+});
+
 test('httpserver adopts the port a platform injects', async (t) => {
   // A PaaS routes traffic and health checks to the port it injected, so the
   // status endpoint has to bind that one, on all interfaces rather than

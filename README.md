@@ -110,6 +110,10 @@ Drop a `.js` file into `plugins/` and it loads. It can be a plain standalone
 script — no exports, no contract — or export `init(plugin)` for slash commands,
 buttons, gateway listeners, scheduled tasks and persistent storage.
 
+The two bundled plugins are **examples and ship disabled**, so a fresh install
+opens no port and adds no commands. Enable one with `/plugin load` or by editing
+`plugins/plugins.json`.
+
 ```js
 // plugins/ticker.js — a complete, working plugin
 setInterval(() => console.log('tick'), 60_000);
@@ -331,9 +335,13 @@ sandbox. journald rotates the logs, so `LOG_FILE` is unnecessary.
 Most of these detect the `Dockerfile` and build it with no further
 configuration. Set `DISCORD_TOKEN` in their environment settings and it starts.
 
-**The bot itself listens on no ports** — verified: zero server handles with
-plugins disabled. It is a long-running worker process, and a container whose
-main process keeps running is all any of these platforms need.
+**A default install listens on no ports.** The bot core never opens one, and the
+two bundled plugins are examples that ship disabled. It is a long-running worker
+process, and a container whose main process keeps running is all any of these
+platforms need.
+
+If you enable the `httpserver` example, that changes — see the worker/web note
+below.
 
 **Choose the worker service type, not the web one.** That is the only thing to
 get right:
