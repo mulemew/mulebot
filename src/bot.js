@@ -135,6 +135,9 @@ class Bot {
     if (this.config.pluginsEnabled) {
       await this.plugins.loadAll();
       if (this.config.pluginWatch) this.plugins.startWatching();
+      // Memory-mode plugins leave nothing on disk, so they are fetched again
+      // from the URL they came from.
+      await this.plugins.restoreRemotes();
     } else {
       this.log.info('plugins are disabled by PLUGINS_ENABLED=false');
     }

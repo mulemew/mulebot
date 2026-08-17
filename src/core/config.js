@@ -58,6 +58,10 @@ function loadConfig({ rootDir, token }) {
     // Auto-reload on file change. Off by default: an editor that writes a file
     // in two chunks would otherwise reload a half-written plugin.
     pluginWatch: bool(process.env.PLUGIN_WATCH, false),
+    // Run 'npm install' for a directory plugin that declares dependencies.
+    // Off by default: npm needs well over 100 MB, which on a 256 MB host is
+    // enough to get the container OOM-killed during startup.
+    pluginAutoInstall: bool(process.env.PLUGIN_AUTO_INSTALL, false),
 
     // Registering to a single guild applies instantly; global registration can
     // take up to an hour to propagate through Discord's cache.

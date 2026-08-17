@@ -465,6 +465,73 @@ class PluginHost {
   }
 
   /**
+   * Works out the entry point of a directory plugin.
+   *
+   * `package.json` is honoured the way Node itself does: the `main` field names
+   * the entry file, defaulting to index.js. That is what makes a plugin folder
+   * cloned from somewhere else work without rearranging it.
+   *
+   * What is deliberately NOT honoured is `scripts.start`. A plugin is loaded
+   * into this process, not spawned - there is no separate process for a start
+   * command to launch, and running one would mean dropping a folder into
+   * plugins/ silently executes a shell command.
+   *
+   * @returns {{ file: string, manifest: object|null }|null}
+   */
+  static resolveDirectory(dir) {
+    let manifest = null;
+    const manifestPath = path.join(dir, 'package.json');
+
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      } catch (e) {
+        // A malformed package.json should not make the directory invisible;
+        // fall back to index.js and record why.
+        manifest = { _error: e.message };
+      }
+    }
+
+    const candidates = [];
+    if (manifest && typeof manifest.main === 'string' && manifest.main.trim()) {
+      const target = path.resolve(dir, manifest.main);
+      const root = path.resolve(dir);
+      // `main` must stay inside the plugin folder: "../../src/bot.js" would
+      // otherwise let a dropped-in folder point the loader anywhere on disk.
+      if (target === root || target.startsWith(root + path.sep)) {
+        candidates.push(target);
+        // npm also allows "main": "lib", meaning lib/index.js
+        candidates.push(path.join(target, 'index.js'));
+      }
+    }
+    candidates.push(path.join(dir, 'index.js'), path.join(dir, 'index.cjs'));
+
+    const file = candidates.find((f) => {
+      try {
+        return fs.statSync(f).isFile();
+      } catch {
+        return false;
+      }
+    });
+    return file ? { file, manifest } : null;
+  }
+
+  /**
+   * Declared dependencies that are not installed next to the plugin.
+   * @returns {{ missing: string[], dir: string }|null}
+   */
+  static checkDependencies(file, manifest) {
+    if (!manifest?.dependencies) return null;
+    const names = Object.keys(manifest.dependencies);
+    if (!names.length) return null;
+
+    const dir = path.dirname(file);
+    const modules = path.join(dir, 'node_modules');
+    const missing = names.filter((name) => !fs.existsSync(path.join(modules, ...name.split('/'))));
+    return missing.length ? { missing, dir } : null;
+  }
+
+  /**
    * Files eligible to be plugins. Skipped: dotfiles, underscore-prefixed
    * helpers, anything under node_modules or a directory named _disabled, the
    * manifest itself, and .example files.
@@ -484,11 +551,11 @@ class PluginHost {
 
         const full = path.join(current, entry.name);
         if (entry.isDirectory()) {
-          // A directory plugin is loaded through its index.js, so its helper
-          // files are not each loaded as separate plugins.
-          const index = ['index.js', 'index.cjs'].map((f) => path.join(full, f)).find((f) => fs.existsSync(f));
-          if (index) {
-            out.push({ name: entry.name, file: index, kind: 'module' });
+          // A directory plugin is loaded through one entry point, so its helper
+          // files and node_modules are not each loaded as separate plugins.
+          const resolved = PluginHost.resolveDirectory(full);
+          if (resolved) {
+            out.push({ name: entry.name, file: resolved.file, kind: 'module', manifest: resolved.manifest });
             continue;
           }
           if (depth < 2) walk(full, depth + 1);
@@ -576,14 +643,67 @@ class PluginHost {
     plugin.context = context;
 
     try {
+      // An in-memory plugin has source but no file on disk.
+      if (entry.source !== undefined) {
+        plugin.exports = this.compileSource(entry.source, entry.file, context);
+        plugin.kind = 'memory';
+        plugin.ephemeral = true;
+        plugin.origin = entry.origin || null;
+
+        const exported = plugin.exports || {};
+        plugin.meta = { version: exported.version, description: exported.description, author: exported.author };
+
+        const initFn = exported.init || exported.setup;
+        if (typeof initFn === 'function') await initFn(context);
+
+        plugin.state = 'loaded';
+        plugin.loadedAt = Date.now();
+        log.info(`loaded from memory${entry.origin ? ` (${entry.origin})` : ''}`);
+        return true;
+      }
+
+      // A directory plugin may declare dependencies. They are never installed
+      // silently at boot: npm itself needs well over 100 MB, which on the kind
+      // of small host this bot targets is enough to push the container into the
+      // OOM killer while it is starting. Opt in with PLUGIN_AUTO_INSTALL=true,
+      // or install them yourself - the message says exactly how.
+      const needs = PluginHost.checkDependencies(entry.file, entry.manifest);
+      if (needs) {
+        if (this.bot.config.pluginAutoInstall) {
+          log.info(`installing ${needs.missing.length} declared dependency(ies): ${needs.missing.join(', ')}`);
+          const result = await this.installDependencies(needs.dir);
+          if (!result.ok) {
+            throw new Error(
+              `npm install failed in ${path.basename(needs.dir)} (exit ${result.code}). ` +
+                `Last output: ${result.output.slice(-400)}`,
+            );
+          }
+          log.info('dependencies installed');
+        } else {
+          log.warn(
+            `declares ${needs.missing.length} dependency(ies) that are not installed: ${needs.missing.join(', ')}`,
+          );
+          log.warn(`  install them with:  cd ${needs.dir} && npm install`);
+          log.warn('  or set PLUGIN_AUTO_INSTALL=true to have this done on load');
+          // Loading continues: the plugin may only need them on a code path
+          // that is never reached, and failing outright would be worse than a
+          // clear require() error at the moment it actually matters.
+        }
+      }
+
       plugin.exports = entry.kind === 'native' ? this.loadNative(entry.file) : this.compileAndRun(entry.file, context);
 
-      // Metadata is optional; a bare script has none.
+      // Metadata comes from the module's exports first, then package.json.
+      // A bare script has neither, which is fine.
       const exported = plugin.exports || {};
+      const manifest = entry.manifest || {};
+      if (manifest._error) log.warn(`package.json is malformed and was ignored: ${manifest._error}`);
+
       plugin.meta = {
-        version: exported.version,
-        description: exported.description,
-        author: exported.author,
+        version: exported.version ?? manifest.version,
+        description: exported.description ?? manifest.description,
+        author: exported.author ?? (typeof manifest.author === 'string' ? manifest.author : manifest.author?.name),
+        entry: path.basename(entry.file),
       };
 
       const init = exported.init || exported.setup;
@@ -627,7 +747,19 @@ class PluginHost {
    * See the module header for why this is not plain require().
    */
   compileAndRun(file, context) {
-    const source = fs.readFileSync(file, 'utf8');
+    return this.compileSource(fs.readFileSync(file, 'utf8'), file, context);
+  }
+
+  /**
+   * Compiles and runs plugin source that may never have touched the disk.
+   *
+   * `file` is a path used for stack traces and for resolving require(); for an
+   * in-memory plugin it is a path inside the plugins directory that does not
+   * exist. Node only needs the *directory* to resolve from, so relative
+   * requires still work against the plugins folder and bare specifiers still
+   * find the bot's node_modules.
+   */
+  compileSource(source, file, context) {
     const dirname = path.dirname(file);
 
     const module_ = { exports: {}, filename: file, id: file, loaded: false, paths: [] };
@@ -801,6 +933,51 @@ class PluginHost {
     return wrapped;
   }
 
+  /**
+   * Runs `npm install` inside a plugin's own directory.
+   * Only reached when PLUGIN_AUTO_INSTALL is on.
+   */
+  installDependencies(dir) {
+    return new Promise((resolve) => {
+      const { spawn } = require('node:child_process');
+      const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      // Argument array, never a shell string.
+      const child = spawn(command, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+        cwd: dir,
+        shell: false,
+        windowsHide: true,
+      });
+
+      let output = '';
+      let settled = false;
+      const finish = (code) => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: code === 0, code, output });
+      };
+
+      // A hung install must not hold up the whole boot.
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        output += '\n[timed out after 3 minutes]';
+        finish(-1);
+      }, 180_000);
+      if (typeof timer.unref === 'function') timer.unref();
+
+      child.stdout.on('data', (d) => (output += d));
+      child.stderr.on('data', (d) => (output += d));
+      child.on('error', (e) => {
+        clearTimeout(timer);
+        output += `\n[could not run npm: ${e.message}]`;
+        finish(-1);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        finish(code);
+      });
+    });
+  }
+
   /** Loads a native addon via process.dlopen. */
   loadNative(file) {
     const module_ = { exports: {} };
@@ -831,6 +1008,281 @@ class PluginHost {
       }
       throw e;
     }
+  }
+
+  // ---------- remote installation ----------
+
+  /** The registry of plugins installed from a URL, kept in the data directory. */
+  get remoteFile() {
+    return path.join(this.bot.config.dataDir, 'plugins', '_remote.json');
+  }
+
+  readRemotes() {
+    try {
+      return JSON.parse(fs.readFileSync(this.remoteFile, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  writeRemotes(map) {
+    fs.mkdirSync(path.dirname(this.remoteFile), { recursive: true });
+    fs.writeFileSync(this.remoteFile, JSON.stringify(map, null, 2));
+  }
+
+  /**
+   * Downloads a URL with a size cap and a timeout.
+   * @returns {Promise<{ buffer: Buffer, contentType: string, url: string }>}
+   */
+  async download(url, { maxBytes = 8 * 1024 * 1024, timeoutMs = 30_000 } = {}) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('that is not a valid URL');
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('only http and https URLs can be installed');
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(parsed.href, {
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: { 'user-agent': 'mulebot-plugin-installer' },
+      });
+      if (!response.ok) throw new Error(`the server answered ${response.status} ${response.statusText}`);
+
+      const declared = Number(response.headers.get('content-length') || 0);
+      if (declared && declared > maxBytes) {
+        throw new Error(`the file is ${Math.round(declared / 1024)} KB, over the ${Math.round(maxBytes / 1024)} KB limit`);
+      }
+
+      // content-length can lie or be absent, so the real cap is applied while
+      // reading rather than trusted from the header.
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > maxBytes) {
+          controller.abort();
+          throw new Error(`the download exceeded the ${Math.round(maxBytes / 1024)} KB limit`);
+        }
+        chunks.push(chunk);
+      }
+
+      return {
+        buffer: Buffer.concat(chunks),
+        contentType: response.headers.get('content-type') || '',
+        url: response.url || parsed.href,
+      };
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error(`the download timed out after ${timeoutMs / 1000}s`);
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Derives a plugin name from a URL when none was given. */
+  static nameFromUrl(url) {
+    try {
+      const base = path.basename(new URL(url).pathname) || 'remote-plugin';
+      const stem = base.replace(/\.(js|cjs|zip|tar|tgz|gz)$/i, '').replace(/\.tar$/i, '');
+      const cleaned = stem.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[-._]+/, '');
+      return cleaned || 'remote-plugin';
+    } catch {
+      return 'remote-plugin';
+    }
+  }
+
+  /**
+   * Installs a plugin from a URL.
+   *
+   * @param {string} url
+   * @param {{ name?: string, mode?: 'persist'|'memory'|'once', remember?: boolean }} opts
+   *   persist  write it into the plugins directory and load it (survives restart on disk)
+   *   memory   never touch the disk; recorded so it is fetched again on restart
+   *   once     download, load, and delete the file immediately - gone on restart
+   */
+  async installFromUrl(url, opts = {}) {
+    const mode = opts.mode || 'persist';
+    const name = (opts.name || PluginHost.nameFromUrl(url)).replace(/[^A-Za-z0-9._-]/g, '-');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error('invalid plugin name derived from that URL');
+
+    if (this.plugins.get(name)?.state === 'loaded') await this.unload(name);
+
+    const { buffer, url: finalUrl } = await this.download(url);
+    const looksArchive = (() => {
+      try {
+        require('./archive').read(buffer);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+
+    // ---- archive ----
+    if (looksArchive) {
+      if (mode === 'memory') {
+        throw new Error('an archive cannot be run from memory; it needs a directory. Use persist mode.');
+      }
+      const archive = require('./archive');
+      const target = path.join(this.bot.config.pluginsDir, name);
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.mkdirSync(target, { recursive: true });
+
+      const { files, stripped } = archive.extract(buffer, target);
+      this.log.info(`extracted ${files.length} file(s) into plugins/${name}${stripped ? ` (stripped "${stripped}/")` : ''}`);
+
+      const resolved = PluginHost.resolveDirectory(target);
+      if (!resolved) {
+        fs.rmSync(target, { recursive: true, force: true });
+        throw new Error('the archive has no index.js and no package.json "main", so there is nothing to load');
+      }
+
+      this.plugins.delete(name);
+      const ok = await this.load({ name, file: resolved.file, kind: 'module', manifest: resolved.manifest });
+      if (ok && opts.remember !== false) {
+        const remotes = this.readRemotes();
+        remotes[name] = { url: finalUrl, mode: 'persist', kind: 'archive', at: Date.now() };
+        this.writeRemotes(remotes);
+      }
+      return { ok, name, mode: 'persist', files: files.length, error: this.plugins.get(name)?.error?.message };
+    }
+
+    // ---- single script ----
+    const source = buffer.toString('utf8');
+    if (!source.trim()) throw new Error('the downloaded file is empty');
+
+    if (mode === 'memory') {
+      // Never written to disk. Recorded so a restart fetches it again.
+      const virtualFile = path.join(this.bot.config.pluginsDir, `${name}.js`);
+      this.plugins.delete(name);
+      const ok = await this.load({ name, file: virtualFile, kind: 'script', source, origin: finalUrl });
+
+      if (ok && opts.remember !== false) {
+        const remotes = this.readRemotes();
+        remotes[name] = { url: finalUrl, mode: 'memory', kind: 'script', at: Date.now() };
+        this.writeRemotes(remotes);
+      }
+      return { ok, name, mode: 'memory', error: this.plugins.get(name)?.error?.message };
+    }
+
+    const file = path.join(this.bot.config.pluginsDir, `${name}.js`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, source, 'utf8');
+
+    this.plugins.delete(name);
+    const ok = await this.load({ name, file, kind: 'script' });
+    const plugin = this.plugins.get(name);
+    if (plugin) plugin.origin = finalUrl;
+
+    if (mode === 'once') {
+      // Loaded, then the file is removed. The code stays live in this process
+      // and is gone after a restart - useful for a one-off task or for trying
+      // something without leaving it behind.
+      fs.rmSync(file, { force: true });
+      if (plugin) plugin.ephemeral = true;
+      this.log.info(`removed plugins/${name}.js from disk; it runs until the next restart`);
+      return { ok, name, mode: 'once', error: plugin?.error?.message };
+    }
+
+    if (ok && opts.remember !== false) {
+      const remotes = this.readRemotes();
+      remotes[name] = { url: finalUrl, mode: 'persist', kind: 'script', at: Date.now() };
+      this.writeRemotes(remotes);
+    }
+    return { ok, name, mode: 'persist', error: plugin?.error?.message };
+  }
+
+  /**
+   * Re-fetches every memory-mode plugin. Called once after the disk plugins
+   * have loaded, because those are the ones that leave no trace on restart.
+   */
+  async restoreRemotes() {
+    const remotes = this.readRemotes();
+    const memoryOnes = Object.entries(remotes).filter(([, r]) => r.mode === 'memory');
+    if (!memoryOnes.length) return { restored: 0, failed: 0 };
+
+    let restored = 0;
+    let failed = 0;
+    for (const [name, record] of memoryOnes) {
+      try {
+        const result = await this.installFromUrl(record.url, { name, mode: 'memory', remember: false });
+        result.ok ? restored++ : failed++;
+        if (!result.ok) this.log.warn(`could not restore in-memory plugin "${name}": ${result.error}`);
+      } catch (e) {
+        failed++;
+        this.log.warn(`could not restore in-memory plugin "${name}" from ${record.url}: ${e.message}`);
+      }
+    }
+    this.log.info(`restored ${restored} in-memory plugin(s) from their source URLs${failed ? `, ${failed} failed` : ''}`);
+    return { restored, failed };
+  }
+
+  /** Forgets a remote record, so a restart stops fetching it. */
+  forgetRemote(name) {
+    const remotes = this.readRemotes();
+    if (!remotes[name]) return false;
+    delete remotes[name];
+    this.writeRemotes(remotes);
+    return true;
+  }
+
+  /**
+   * Installs from an uploaded buffer - the same paths as installFromUrl, minus
+   * the download.
+   */
+  async installFromBuffer(buffer, { name, filename, mode = 'persist' } = {}) {
+    const archive = require('./archive');
+    const derived = (name || String(filename || 'uploaded').replace(/\.(js|cjs|zip|tar|tgz|gz)$/i, '')).replace(
+      /[^A-Za-z0-9._-]/g,
+      '-',
+    );
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(derived)) throw new Error('invalid plugin name');
+
+    if (this.plugins.get(derived)?.state === 'loaded') await this.unload(derived);
+
+    let isArchive = false;
+    try {
+      archive.read(buffer);
+      isArchive = true;
+    } catch {
+      isArchive = false;
+    }
+
+    if (isArchive) {
+      const target = path.join(this.bot.config.pluginsDir, derived);
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.mkdirSync(target, { recursive: true });
+      const { files, stripped } = archive.extract(buffer, target);
+
+      const resolved = PluginHost.resolveDirectory(target);
+      if (!resolved) {
+        fs.rmSync(target, { recursive: true, force: true });
+        throw new Error('the archive has no index.js and no package.json "main"');
+      }
+      this.plugins.delete(derived);
+      const ok = await this.load({ name: derived, file: resolved.file, kind: 'module', manifest: resolved.manifest });
+      return { ok, name: derived, files: files.length, stripped, error: this.plugins.get(derived)?.error?.message };
+    }
+
+    const source = buffer.toString('utf8');
+    if (mode === 'memory') {
+      const virtualFile = path.join(this.bot.config.pluginsDir, `${derived}.js`);
+      this.plugins.delete(derived);
+      const ok = await this.load({ name: derived, file: virtualFile, kind: 'script', source, origin: 'upload' });
+      return { ok, name: derived, mode: 'memory', error: this.plugins.get(derived)?.error?.message };
+    }
+
+    const file = path.join(this.bot.config.pluginsDir, `${derived}.js`);
+    fs.writeFileSync(file, source, 'utf8');
+    this.plugins.delete(derived);
+    const ok = await this.load({ name: derived, file, kind: 'script' });
+    return { ok, name: derived, mode: 'persist', error: this.plugins.get(derived)?.error?.message };
   }
 
   // ---------- unloading ----------

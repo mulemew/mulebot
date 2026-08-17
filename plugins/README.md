@@ -5,8 +5,9 @@ with `/plugin scan`.
 
 ```
 plugins/
-  httpserver.js     standalone script — runs on load, starts an HTTP server
+  httpserver.js     standalone script — runs on load, starts a status endpoint
   hello.js          full contract — command, button, storage, scheduled task
+  webpanel.js       browser UI for managing plugins (needs a token; off until set)
   plugins.json      optional: disable plugins, pass config
 ```
 
@@ -161,6 +162,35 @@ Note for Docker: the image copies `plugins/` at build time. Mount it as a volume
 (`./plugins:/app/plugins`) to add plugins without rebuilding — but a plugin with
 its own `node_modules` then needs those installed on the host, for the
 container's platform.
+
+## Installing from a URL or an archive
+
+Three persistence modes, because "try this plugin" and "install this plugin" are
+different things:
+
+| Mode | On disk? | After a restart |
+|---|---|---|
+| `persist` | written to `plugins/` | still there, loaded normally |
+| `once` | written, loaded, then **deleted** | gone |
+| `memory` | **never written** | re-fetched from its URL |
+
+```js
+await bot.plugins.installFromUrl('https://example.com/p.js', { mode: 'memory' });
+```
+
+`memory` mode records only the URL, in `data/plugins/_remote.json`, and fetches
+it again on every start — so the code exists on disk nowhere, and updating the
+plugin means updating the file it is served from.
+
+Archives (`.zip`, `.tar`, `.tar.gz`) install into a directory. When every entry
+shares one top-level folder — what GitHub's "Download ZIP" produces — that
+wrapper is stripped, so `myplugin-main/index.js` becomes `myplugin/index.js`.
+
+The archive readers are written directly against zlib rather than pulling in a
+dependency, and every entry path is validated before anything is written: an
+entry named `../../etc/cron.d/x` ("zip slip") is discarded, not extracted.
+Downloads are capped at 8 MB, uploads at 16 MB, and an archive that expands past
+64 MB is rejected as a decompression bomb.
 
 ## Taking effect immediately
 
@@ -347,3 +377,53 @@ boundary and this host does not pretend it is.
 Installing a plugin is exactly as consequential as editing the bot's source.
 Only run code you have read or trust. On a host where this directory is not
 exclusively yours, set `PLUGINS_ENABLED=false`.
+
+---
+
+## The web panel
+
+`webpanel.js` is a browser UI for everything above: upload a `.js` or an
+archive, install from a URL in any of the three modes, `npm install` a package,
+load / unload / reload / delete, and read the log.
+
+It **refuses to start without a token** — there is no default and no way to run
+it open:
+
+```json
+{ "config": { "webpanel": {
+    "token": "generate-me",
+    "port": 8787,
+    "host": "127.0.0.1",
+    "allowedIps": ["203.0.113.7"]
+} } }
+```
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+```
+
+Understand what it is: **a remote code execution endpoint**. Anyone who reaches
+it with the token owns the host — the Discord token, the data directory, the
+filesystem. It is built to fail closed:
+
+- no token, or a token under 24 characters → the plugin refuses to load
+- binds `127.0.0.1` unless a host is set explicitly, and unlike `httpserver.js`
+  it does **not** open up just because a platform set `PORT`
+- constant-time token comparison
+- five failed attempts blocks that address for 15 minutes
+- optional `allowedIps` allow-list on top of the token
+- uploaded filenames must be bare `name.js`; traversal, absolute paths and
+  subdirectories are rejected
+- npm package names are matched against the registry's grammar and passed to
+  `spawn()` as an argument array, never through a shell
+- the page loads no external script, style or font, and is served under a
+  restrictive CSP
+
+If you need it from another machine, prefer a tunnel over exposing it:
+
+```bash
+ssh -L 8787:127.0.0.1:8787 you@your-server
+```
+
+Exposing it publicly means the token is the only thing between the internet and
+your host. If you do, set `allowedIps` as well and put it behind TLS.

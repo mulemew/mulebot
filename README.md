@@ -300,46 +300,95 @@ sandbox. journald rotates the logs, so `LOG_FILE` is unnecessary.
 Most of these detect the `Dockerfile` and build it with no further
 configuration. Set `DISCORD_TOKEN` in their environment settings and it starts.
 
-Three things are worth knowing before you do, because a Discord bot is a
-*worker*, not a web service, and these platforms assume the opposite:
+**The bot itself listens on no ports** — verified: zero server handles with
+plugins disabled. It is a long-running worker process, and a container whose
+main process keeps running is all any of these platforms need.
 
-**1. Some platforms kill a container that never listens on a port.** The
-bundled `httpserver` plugin covers this: when the platform injects `PORT`, it
-binds `0.0.0.0:$PORT` instead of localhost, so the health check connects. Keep
-that plugin enabled and point the platform's health check at `/health`. It
-returns 503 until the gateway is up, which is exactly right during startup.
+**Choose the worker service type, not the web one.** That is the only thing to
+get right:
 
-**2. The filesystem is usually ephemeral.** `data/` holds every server's
-settings, member records and moderation history. On a platform without a
-persistent volume it is wiped on every redeploy. Attach a volume mounted at
-`/app/data`, or accept that the bot resets each deploy. This is the single most
-common way to lose a server's configuration.
+| Platform | Pick this | Port needed? |
+|---|---|---|
+| Render | Background Worker | no |
+| Railway | service without a public domain | no |
+| Fly.io | omit `http_service` from `fly.toml` | no |
+| Koyeb | Worker | no |
+| Heroku | `worker` dyno | no |
+| Dokploy / Coolify / plain Docker | any | no |
 
-**3. Set the heap ceiling to match the plan.** Add
+Only if you deliberately pick a **web** service type does the platform health-check
+an HTTP port and mark the deployment unhealthy when nothing answers. In that case
+enable the bundled `httpserver` plugin: when the platform injects `PORT` it binds
+`0.0.0.0:$PORT` instead of localhost, and `/health` returns 503 until the gateway
+connects — which is exactly what a health check should see during startup.
+
+Two things that do matter on every platform:
+
+**The filesystem is usually ephemeral.** `data/` holds every server's settings,
+member records and moderation history. Without a persistent volume it is wiped on
+every redeploy. Mount one at `/app/data`. This is the most common way to lose a
+server's configuration.
+
+**Set the heap ceiling to match the plan.** Add
 `NODE_OPTIONS=--max-old-space-size=<≈55% of plan RAM>`; the Dockerfile's default
-of 140 suits a 256 MB plan. If the platform does not expose a cgroup limit the
-bot can read, also set `MEMORY_PROFILE=low`.
+of 140 suits a 256 MB plan. If the platform exposes no cgroup limit the bot can
+read, also set `MEMORY_PROFILE=low`.
 
 Scale to **one instance**. Two instances on the same token both connect to the
 gateway and every command runs twice.
 
-### Hosting panel (Pterodactyl / Pelican / FeatherPanel)
+### Hosting panel (Pterodactyl / Pelican / FeatherPanel), 256 MB plan
 
-Startup command:
+Startup command, if the panel lets you set one:
 
 ```
 if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; node index.js
 ```
 
-Then add two startup variables:
+#### If the panel cannot set environment variables or the startup command
+
+Plenty of cheap panels give you a file manager and nothing else. **Everything
+except one setting can go in a `.env` file** next to `index.js` — upload it with
+the file manager and restart. Real environment variables always win over `.env`,
+so the same file works on a panel that does support them.
+
+Copy `.env.example` to `.env` and edit, or create it with just:
+
+```ini
+DISCORD_TOKEN=your_token_here
+
+# The important one on a 256 MB plan. Panels rarely expose a cgroup limit the
+# bot can read, so tell it directly instead of letting it guess from host RAM.
+MEMORY_PROFILE=low
+
+# Optional, but useful when the panel console truncates scrollback.
+LOG_FILE=logs/bot.log
+LOG_FILE_MAX_BYTES=524288
+LOG_FILE_KEEP=3
+```
+
+That is enough. The bot runs, picks tight cache limits, and caps its own log
+files.
+
+**The one setting `.env` cannot carry is `NODE_OPTIONS`.** Node reads it before
+the process starts — before any code, including the code that reads `.env`. If
+the panel offers no way to set it:
+
+- The bot still runs fine. Measured idle is 76 MB resident with ~18 MB of heap,
+  nowhere near a limit.
+- `MEMORY_PROFILE=low` in `.env` controls the thing that actually grows —
+  discord.js caches — and that is the larger lever by far.
+- What you lose is a safety margin: without a heap ceiling V8 will not collect
+  aggressively under pressure, so a memory spike is likelier to end in an OOM
+  kill than in a slow garbage collection.
+
+If the panel does expose startup variables, set both:
 
 | Variable | Value |
 |---|---|
 | `DISCORD_TOKEN` | your token |
-| `NODE_OPTIONS` | `--max-old-space-size=140` (≈55% of your plan's RAM) |
-
-Panels usually do not expose a cgroup limit the bot can read, so if the plan is
-small also set `MEMORY_PROFILE=low` explicitly.
+| `MEMORY_PROFILE` | `low` |
+| `NODE_OPTIONS` | `--max-old-space-size=140` (≈55% of the plan) |
 
 All diagnostics go to **stdout**, never stderr, because these panels stream
 stdout to their console and frequently discard stderr — a diagnostic on stderr

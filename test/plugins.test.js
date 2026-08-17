@@ -419,6 +419,151 @@ test('plugins are CommonJS, with a clear error for the usual mistakes', async (t
   assert.ok(bot.plugins.get('portable-import').context.store.get('platform'), 'and actually return the module');
 });
 
+test('directory plugins honour package.json main and metadata', async (t) => {
+  const dir = tempDir('bot-plugins-');
+
+  const bundle = path.join(dir, 'bundle');
+  fs.mkdirSync(path.join(bundle, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(bundle, 'package.json'),
+    JSON.stringify({ name: 'bundle', version: '4.5.6', description: 'from manifest', main: 'src/app.js' }),
+  );
+  fs.writeFileSync(path.join(bundle, 'src', 'app.js'), `plugin.store.set('entry', 'src/app.js');`);
+
+  // main pointing outside the plugin folder must be ignored, not followed.
+  const escapee = path.join(dir, 'escapee');
+  fs.mkdirSync(escapee, { recursive: true });
+  fs.writeFileSync(path.join(escapee, 'package.json'), JSON.stringify({ main: '../../../src/bot.js' }));
+  fs.writeFileSync(path.join(escapee, 'index.js'), `plugin.store.set('safe', true);`);
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const p = bot.plugins.get('bundle');
+  assert.equal(p.state, 'loaded');
+  assert.equal(p.version, '4.5.6', 'version should come from package.json');
+  assert.equal(p.description, 'from manifest');
+  assert.equal(p.context.store.get('entry'), 'src/app.js', 'main should decide the entry point');
+
+  const e = bot.plugins.get('escapee');
+  assert.equal(e.state, 'loaded');
+  assert.equal(e.context.store.get('safe'), true, 'a main escaping the folder must fall back to index.js');
+});
+
+test('archives are read and extracted safely', () => {
+  const archive = require('../src/core/archive');
+  const zlib = require('node:zlib');
+
+  // Build a real tar.gz rather than checking in a binary fixture.
+  const tar = (files) => {
+    const blocks = [];
+    for (const [name, content] of Object.entries(files)) {
+      const data = Buffer.from(content, 'utf8');
+      const h = Buffer.alloc(512);
+      h.write(name, 0, 100, 'utf8');
+      h.write('0000644\0', 100, 8, 'ascii');
+      h.write('0000000\0', 108, 8, 'ascii');
+      h.write('0000000\0', 116, 8, 'ascii');
+      h.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+      h.write('00000000000\0', 136, 12, 'ascii');
+      h.write('        ', 148, 8, 'ascii');
+      h.write('0', 156, 1, 'ascii');
+      h.write('ustar\0', 257, 6, 'ascii');
+      h.write('00', 263, 2, 'ascii');
+      let sum = 0;
+      for (const b of h) sum += b;
+      h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+      blocks.push(h, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+    }
+    blocks.push(Buffer.alloc(1024));
+    return zlib.gzipSync(Buffer.concat(blocks));
+  };
+
+  const good = tar({ 'wrapper/index.js': 'module.exports = {};', 'wrapper/lib/a.js': 'x' });
+  assert.equal(archive.read(good).length, 2);
+
+  const out = tempDir('bot-extract-');
+  const result = archive.extract(good, out);
+  assert.equal(result.stripped, 'wrapper', 'a single top-level directory should be stripped');
+  assert.ok(fs.existsSync(path.join(out, 'index.js')));
+  assert.ok(fs.existsSync(path.join(out, 'lib', 'a.js')));
+
+  // Zip slip: an entry that climbs out of the destination must never be written.
+  // A mixed archive proves the good entry still lands while the escape does not.
+  const mixed = tar({ 'ok.js': 'fine', '../../escaped.js': 'owned', '/abs.js': 'owned' });
+  const target = tempDir('bot-extract-');
+  archive.extract(mixed, target);
+
+  assert.ok(fs.existsSync(path.join(target, 'ok.js')), 'the legitimate entry should extract');
+  assert.equal(fs.existsSync(path.join(path.dirname(target), 'escaped.js')), false, 'traversal must be blocked');
+  assert.equal(fs.existsSync(path.join(target, 'abs.js')), false, 'absolute paths must be blocked');
+
+  // An archive containing nothing but escapes leaves nothing to extract, which
+  // surfaces as an error rather than a silent success.
+  assert.throws(() => archive.extract(tar({ '../../only-evil.js': 'x' }), target), /no files/);
+  assert.equal(archive.safeEntryPath('../x'), null);
+  assert.equal(archive.safeEntryPath('/etc/passwd'), null);
+  assert.equal(archive.safeEntryPath('C:\\windows\\x'), null);
+  assert.equal(archive.safeEntryPath('lib/ok.js'), 'lib/ok.js');
+
+  assert.throws(() => archive.read(Buffer.from('not an archive at all')), /unrecognised/);
+
+  fs.rmSync(out, { recursive: true, force: true });
+  fs.rmSync(target, { recursive: true, force: true });
+});
+
+test('installing from a URL supports disk, once and memory modes', async (t) => {
+  const dir = tempDir('bot-plugins-');
+  const port = takePort();
+
+  const origin = http.createServer((req, res) => {
+    if (req.url === '/p.js') {
+      res.writeHead(200);
+      res.end("plugin.store.set('loaded', true);");
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((r) => origin.listen(port, '127.0.0.1', r));
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    origin.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const url = `http://127.0.0.1:${port}/p.js`;
+
+  const kept = await bot.plugins.installFromUrl(url, { mode: 'persist', name: 'kept' });
+  assert.equal(kept.ok, true, kept.error);
+  assert.ok(fs.existsSync(path.join(dir, 'kept.js')), 'persist mode writes the file');
+
+  const once = await bot.plugins.installFromUrl(url, { mode: 'once', name: 'once' });
+  assert.equal(once.ok, true, once.error);
+  assert.equal(fs.existsSync(path.join(dir, 'once.js')), false, 'once mode deletes the file');
+  assert.equal(bot.plugins.get('once').state, 'loaded', 'but keeps running in this process');
+
+  const mem = await bot.plugins.installFromUrl(url, { mode: 'memory', name: 'mem' });
+  assert.equal(mem.ok, true, mem.error);
+  assert.equal(fs.existsSync(path.join(dir, 'mem.js')), false, 'memory mode never touches the disk');
+  assert.equal(bot.plugins.get('mem').ephemeral, true);
+  assert.equal(bot.plugins.get('mem').context.store.get('loaded'), true, 'and actually runs');
+
+  // Only memory-mode plugins are remembered for refetching; "once" is meant to
+  // disappear on restart and must not be recorded.
+  const remotes = bot.plugins.readRemotes();
+  assert.ok(remotes.mem, 'memory mode is remembered');
+  assert.equal(remotes.once, undefined, 'once mode is not remembered');
+
+  await assert.rejects(() => bot.plugins.installFromUrl('file:///etc/passwd', { name: 'x' }), /http/);
+  await assert.rejects(() => bot.plugins.installFromUrl('nonsense', { name: 'x' }), /valid URL/);
+});
+
 test('the bundled example plugins load and behave', async (t) => {
   // Runs against the real plugins/ directory, so a broken shipped example is
   // caught rather than shipped.
