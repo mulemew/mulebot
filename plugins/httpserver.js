@@ -155,8 +155,24 @@ server.on('error', (e) => {
 
 server.listen(PORT, HOST, () => {
   log.info(`status endpoint listening on http://${HOST}:${PORT} (/status, /health, /metrics)`);
+
   if (HOST === '0.0.0.0' && !config.host) {
     log.info('bound to all interfaces because PORT was set by the platform — this is what its health check needs');
+  }
+
+  // An explicit port in plugins.json wins, which is the right precedence for a
+  // setting someone typed. But when the platform also injected PORT, the two
+  // disagreeing is almost always a mistake: the platform routes traffic and
+  // health checks to *its* port only, so a deployment that looks configured
+  // will be marked unhealthy and killed. Say so rather than letting it fail
+  // silently.
+  const injected = process.env.PORT;
+  if (injected && config.port && Number(injected) !== Number(config.port)) {
+    log.warn('');
+    log.warn(`the platform injected PORT=${injected} but plugins.json sets port ${config.port}, so ${config.port} is in use.`);
+    log.warn(`the platform will health-check ${injected}, find nothing listening, and mark this deployment unhealthy.`);
+    log.warn(`remove "port" from the webserver config in plugins/plugins.json to use the injected ${injected} instead.`);
+    log.warn('');
   }
 });
 

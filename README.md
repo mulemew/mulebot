@@ -77,7 +77,7 @@ src/events/              gateway event handlers
 src/commands/            slash commands, grouped by category
 
 plugins/                 drop .js files here — see plugins/README.md
-test/                    47 tests: pure logic + plugin lifecycle
+test/                    62 tests: pure logic, plugin lifecycle, runtime limits
 ```
 
 Run the tests with `npm test` (Node's built-in runner, no dev dependencies).
@@ -97,7 +97,7 @@ Run the tests with `npm test` (Node's built-in runner, no dev dependencies).
 | **Fun** | `/roll` `/pick` `/8ball` `/fun` `/ship` |
 | **Server features** | `/giveaway` `/ticket` `/reactionrole` `/starboard` `/autoresponder` `/suggest` `/suggestion` |
 | **Setup** | `/config` — 12 groups covering every per-server setting |
-| **Operator** | `/owner` — status, guild list, blacklist, log level, backups, task queue<br>`/plugin` — list, load, unload, reload, scan, watch |
+| **Operator** | `/owner` — status, guild list, blacklist, log level, backups, task queue<br>`/plugin` — upload, install from URL, npm install, list, load, unload, reload, delete, source, scan, watch |
 
 Everything is **off by default**. A freshly invited bot stays silent until an
 admin runs `/config`.
@@ -107,8 +107,9 @@ admin runs `/config`.
 ## Plugins
 
 Drop a `.js` file into `plugins/` and it loads on the next start, or right away
-with `/plugin scan`. Two bundled examples: `httpserver.js` (a standalone script
-that starts a status endpoint) and `hello.js` (the full contract).
+with `/plugin scan`. Three bundled examples: `httpserver.js` (a standalone script
+that starts a status endpoint), `hello.js` (the full contract) and `webpanel.js`
+(a browser UI, off until you give it a token).
 
 A plugin can be a plain script with no exports — it just runs:
 
@@ -128,9 +129,20 @@ const server = require('http').createServer(handler);
 server.listen(3000);          // /plugin unload closes this port. No cleanup code.
 ```
 
-`/plugin list · info · load · unload · reload · scan · watch` manages them at
-runtime; commands a plugin adds or removes are re-registered with Discord
-automatically.
+Manage them from Discord — no port, no token, no web endpoint. `/plugin` is
+owner-only, so Discord's own identity is the authentication:
+
+```
+/plugin upload   file:<attach a .js or .zip>   install from an attachment
+/plugin install  url:<...> mode:<persist|once|memory>
+/plugin npm      package:axios                 install a dependency
+/plugin list · info · load · unload · reload · delete · source · scan · watch
+```
+
+Commands a plugin adds or removes are re-registered with Discord automatically.
+The bundled `webpanel` plugin offers the same operations as a web page, for when
+a browser is easier than a chat client — but it needs a port and a token, so
+Discord is the safer default.
 
 `.node` / `.so` native addons load via `process.dlopen` — they must be real Node
 (N-API) addons matching this ABI, platform and architecture, and they cannot be
@@ -384,11 +396,15 @@ gateway and every command runs twice.
 
 ### Hosting panel (Pterodactyl / Pelican / FeatherPanel), 256 MB plan
 
-Startup command, if the panel lets you set one:
+Startup command, if the panel lets you set one. Note the `NODE_OPTIONS` prefix —
+setting it inline is the trick that works even on panels with no environment
+variable UI, because the shell applies it to the `node` process:
 
 ```
-if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; node index.js
+if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; NODE_OPTIONS="--max-old-space-size=140" node index.js
 ```
+
+That covers the one setting `.env` cannot carry. Everything else goes in `.env`.
 
 #### If the panel cannot set environment variables or the startup command
 
@@ -416,8 +432,16 @@ That is enough. The bot runs, picks tight cache limits, and caps its own log
 files.
 
 **The one setting `.env` cannot carry is `NODE_OPTIONS`.** Node reads it before
-the process starts — before any code, including the code that reads `.env`. If
-the panel offers no way to set it:
+the process starts — before any code, including the code that reads `.env`.
+
+If the panel lets you edit the **startup command**, prefix it there and you are
+done, no environment variable UI needed:
+
+```
+NODE_OPTIONS="--max-old-space-size=140" node index.js
+```
+
+If it allows neither: 
 
 - The bot still runs fine. Measured idle is 76 MB resident with ~18 MB of heap,
   nowhere near a limit.

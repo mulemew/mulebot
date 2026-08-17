@@ -374,13 +374,11 @@ module.exports = {
 
       if (route === '/api/npm' && req.method === 'POST') {
         const body = await readBody(req);
-        const spec = validPackageName(body.package);
-        if (!spec) throw new Error('that is not a valid npm package name');
-
-        log.info(`installing npm package ${spec}`);
-        const result = await runNpm(['install', spec, '--no-audit', '--no-fund', '--omit=dev']);
-        log.info(`npm install ${spec} exited ${result.code}`);
-        return send(res, 200, { ok: result.code === 0, code: result.code, output: result.output });
+        // Shares the host implementation with /plugin npm, so validation and
+        // spawn behaviour cannot drift between the two entry points.
+        const result = await bot.plugins.installNpmPackage(body.package);
+        if (!result.ok && result.code === -1 && /not a valid/.test(result.output)) throw new Error(result.output);
+        return send(res, 200, { ok: result.ok, code: result.code, output: result.output });
       }
 
       if (route === '/api/install-url' && req.method === 'POST') {

@@ -934,34 +934,68 @@ class PluginHost {
   }
 
   /**
-   * Runs `npm install` inside a plugin's own directory.
+   * Runs `npm install` inside a plugin own directory.
    * Only reached when PLUGIN_AUTO_INSTALL is on.
    */
   installDependencies(dir) {
+    return this.runNpm(['install', '--omit=dev', '--no-audit', '--no-fund'], dir);
+  }
+
+  /**
+   * npm's package name grammar, plus a length cap. Returns the normalised
+   * spec, or null when it is not a package name.
+   *
+   * This is the gate that stops "axios; rm -rf /" reaching a shell. It is
+   * belt-and-braces alongside spawn() being given an argument array rather than
+   * a command string - either alone would be sufficient, but this is the layer
+   * that produces a comprehensible error instead of a confusing npm one.
+   */
+  static validPackageSpec(spec) {
+    const s = String(spec ?? '').trim();
+    if (!s || s.length > 214) return null;
+    const m = s.match(/^((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)(?:@([a-zA-Z0-9._^~><=|\s*-]+))?$/);
+    if (!m) return null;
+    return m[2] ? `${m[1]}@${m[2]}` : m[1];
+  }
+
+  /**
+   * Installs an npm package into the bot's own node_modules, so every plugin
+   * can require it. Shared by /plugin npm and the web panel.
+   */
+  async installNpmPackage(spec) {
+    const valid = PluginHost.validPackageSpec(spec);
+    if (!valid) {
+      return { ok: false, code: -1, output: `"${spec}" is not a valid npm package name.` };
+    }
+    this.log.info(`installing npm package ${valid}`);
+    const result = await this.runNpm(['install', valid, '--no-audit', '--no-fund', '--omit=dev'], this.bot.config.rootDir);
+    this.log.info(`npm install ${valid} exited ${result.code}`);
+    return { ...result, spec: valid };
+  }
+
+  /**
+   * Runs npm with an argument array in `cwd`.
+   * Never a shell string, so nothing in the arguments can be a separator.
+   */
+  runNpm(args, cwd, { timeoutMs = 180_000 } = {}) {
     return new Promise((resolve) => {
       const { spawn } = require('node:child_process');
       const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      // Argument array, never a shell string.
-      const child = spawn(command, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
-        cwd: dir,
-        shell: false,
-        windowsHide: true,
-      });
+      const child = spawn(command, args, { cwd, shell: false, windowsHide: true });
 
       let output = '';
       let settled = false;
       const finish = (code) => {
         if (settled) return;
         settled = true;
-        resolve({ ok: code === 0, code, output });
+        resolve({ ok: code === 0, code, output: output.slice(-8000) });
       };
 
-      // A hung install must not hold up the whole boot.
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
-        output += '\n[timed out after 3 minutes]';
+        output += `\n[timed out after ${Math.round(timeoutMs / 1000)}s]`;
         finish(-1);
-      }, 180_000);
+      }, timeoutMs);
       if (typeof timer.unref === 'function') timer.unref();
 
       child.stdout.on('data', (d) => (output += d));

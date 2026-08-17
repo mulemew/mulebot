@@ -52,6 +52,57 @@ const plugin = {
         .setDescription('Reload a plugin, picking up edits to its file')
         .addStringOption((o) => o.setName('name').setDescription('Plugin name').setRequired(true).setAutocomplete(true)),
     )
+    .addSubcommand((s) =>
+      s
+        .setName('upload')
+        .setDescription('Attach a .js file or a .zip/.tar.gz bundle and install it')
+        .addAttachmentOption((o) => o.setName('file').setDescription('The plugin file or archive').setRequired(true))
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('How long it should survive')
+            .addChoices(
+              { name: 'keep on disk (default)', value: 'persist' },
+              { name: 'memory only — gone on restart', value: 'memory' },
+            ),
+        )
+        .addStringOption((o) => o.setName('name').setDescription('Override the plugin name')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('install')
+        .setDescription('Download and install a plugin from a URL')
+        .addStringOption((o) => o.setName('url').setDescription('A .js file, or a .zip/.tar.gz bundle').setRequired(true))
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('How long it should survive')
+            .addChoices(
+              { name: 'keep on disk (default)', value: 'persist' },
+              { name: 'run once — file deleted, gone on restart', value: 'once' },
+              { name: 'memory only — refetched from the URL on restart', value: 'memory' },
+            ),
+        )
+        .addStringOption((o) => o.setName('name').setDescription('Override the plugin name')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('delete')
+        .setDescription('Unload a plugin and delete its file')
+        .addStringOption((o) => o.setName('name').setDescription('Plugin name').setRequired(true).setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('source')
+        .setDescription('Send a plugin\'s source back to you')
+        .addStringOption((o) => o.setName('name').setDescription('Plugin name').setRequired(true).setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('npm')
+        .setDescription('Install an npm package so plugins can require it')
+        .addStringOption((o) => o.setName('package').setDescription('e.g. axios, or @scope/name@1.2.3').setRequired(true)),
+    )
     .addSubcommand((s) => s.setName('scan').setDescription('Look for newly added plugin files and load them'))
     .addSubcommand((s) =>
       s
@@ -253,6 +304,175 @@ const plugin = {
 
         if (!result.ok) return ctx.fail(`Reload failed:\n${codeBlock(truncate(result.error, 900))}`);
         return ctx.ok('Plugin reloaded', `\`${name}\` was restarted from its file on disk.`, { ephemeral: true });
+      }
+
+      case 'upload': {
+        // Discord already authenticated the uploader and this command is
+        // owner-only, so the attachment is as trusted as the person running it.
+        // That makes this the safer half of what webpanel.js does: no port, no
+        // token to leak, no endpoint reachable from the internet.
+        const file = ctx.attachmentOpt('file');
+        const mode = ctx.str('mode', 'persist');
+
+        if (file.size > 8 * 1024 * 1024) return ctx.fail('Keep the file under 8 MB.');
+        if (!/\.(js|cjs|zip|tar|gz|tgz)$/i.test(file.name)) {
+          return ctx.fail('Attach a `.js` file, or a `.zip` / `.tar.gz` bundle.');
+        }
+
+        await ctx.defer({ ephemeral: true });
+
+        const response = await fetch(file.url).catch(() => null);
+        if (!response?.ok) return ctx.fail('I could not download that attachment from Discord.');
+        const buffer = Buffer.from(await response.arrayBuffer());
+
+        let result;
+        try {
+          result = await host.installFromBuffer(buffer, {
+            filename: file.name,
+            name: ctx.str('name') || undefined,
+            mode,
+          });
+        } catch (e) {
+          return ctx.fail(`Install failed:\n${codeBlock(truncate(e.message, 900))}`);
+        }
+        await host.syncCommands();
+
+        if (!result.ok) return ctx.fail(`\`${result.name}\` failed to load:\n${codeBlock(truncate(result.error || 'unknown', 900))}`);
+
+        const owned = host.get(result.name)?.context.describe();
+        return ctx.ok(
+          'Plugin installed',
+          [
+            `\`${result.name}\` is running (${result.mode || 'persist'}).`,
+            result.files ? `Extracted ${result.files} file(s).` : null,
+            result.stripped ? `Stripped the \`${result.stripped}/\` wrapper.` : null,
+            owned?.commands.length ? `Registered ${owned.commands.map((c) => `/${c}`).join(', ')}.` : null,
+            mode === 'memory' ? '\n⚠️ Memory only — it disappears on the next restart.' : null,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          { ephemeral: true },
+        );
+      }
+
+      case 'install': {
+        const url = ctx.str('url');
+        const mode = ctx.str('mode', 'persist');
+
+        await ctx.defer({ ephemeral: true });
+
+        let result;
+        try {
+          result = await host.installFromUrl(url, { mode, name: ctx.str('name') || undefined });
+        } catch (e) {
+          return ctx.fail(`Install failed:\n${codeBlock(truncate(e.message, 900))}`);
+        }
+        await host.syncCommands();
+
+        if (!result.ok) return ctx.fail(`\`${result.name}\` failed to load:\n${codeBlock(truncate(result.error || 'unknown', 900))}`);
+
+        const notes = {
+          persist: 'Written to the plugins directory; it survives restarts.',
+          once: 'The file was deleted after loading. It runs until the next restart, then it is gone.',
+          memory: 'Never written to disk. The URL is remembered and fetched again on every start.',
+        };
+        const owned = host.get(result.name)?.context.describe();
+
+        return ctx.ok(
+          'Plugin installed',
+          [
+            `\`${result.name}\` is running.`,
+            notes[result.mode || 'persist'],
+            result.files ? `Extracted ${result.files} file(s).` : null,
+            owned?.commands.length ? `Registered ${owned.commands.map((c) => `/${c}`).join(', ')}.` : null,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          { ephemeral: true },
+        );
+      }
+
+      case 'delete': {
+        const known = host.get(name);
+        if (!known) return ctx.fail(`No plugin called \`${name}\`.`);
+        if (known.kind === 'memory') {
+          // Nothing on disk to remove; forgetting the URL is the equivalent.
+          await host.unload(name);
+          host.forgetRemote(name);
+          host.plugins.delete(name);
+          await host.syncCommands();
+          return ctx.ok('Removed', `\`${name}\` was unloaded and its source URL forgotten.`, { ephemeral: true });
+        }
+
+        await ctx.defer({ ephemeral: true });
+        if (known.state === 'loaded') await host.unload(name);
+
+        const fs = require('node:fs');
+        const target = known.file;
+        // A directory plugin's whole folder goes, a single file just the file.
+        const dir = path.dirname(target);
+        const insidePluginDir = path.resolve(dir) !== path.resolve(host.dir);
+
+        try {
+          if (insidePluginDir) fs.rmSync(dir, { recursive: true, force: true });
+          else fs.rmSync(target, { force: true });
+        } catch (e) {
+          return ctx.fail(`Could not delete it: ${e.message}`);
+        }
+
+        host.plugins.delete(name);
+        host.forgetRemote(name);
+        await host.syncCommands();
+
+        return ctx.ok(
+          'Deleted',
+          `\`${name}\` was unloaded and ${insidePluginDir ? 'its directory' : 'its file'} removed.`,
+          { ephemeral: true },
+        );
+      }
+
+      case 'source': {
+        const known = host.get(name);
+        if (!known) return ctx.fail(`No plugin called \`${name}\`.`);
+        if (known.kind === 'memory') {
+          return ctx.fail('That plugin runs from memory, so there is no file to send. Its source is at its origin URL.');
+        }
+
+        const fs = require('node:fs');
+        if (!fs.existsSync(known.file)) return ctx.fail('Its file no longer exists on disk.');
+
+        const content = fs.readFileSync(known.file, 'utf8');
+        const { AttachmentBuilder } = require('discord.js');
+        return ctx.whisper({
+          embeds: [
+            embeds.base(
+              `${name} source`,
+              `\`${known.file}\`\n${number(Buffer.byteLength(content))} bytes`,
+            ),
+          ],
+          files: [new AttachmentBuilder(Buffer.from(content, 'utf8'), { name: path.basename(known.file) })],
+        });
+      }
+
+      case 'npm': {
+        const spec = ctx.str('package');
+        await ctx.defer({ ephemeral: true });
+
+        const result = await host.installNpmPackage(spec);
+        if (!result.ok) {
+          return ctx.fail(
+            `\`npm install ${spec}\` failed (exit ${result.code}):\n${codeBlock(truncate(result.output || 'no output', 800))}`,
+          );
+        }
+        return ctx.ok(
+          'Package installed',
+          [
+            `\`${spec}\` is now available to every plugin via \`require()\`.`,
+            '',
+            codeBlock(truncate(result.output.split('\n').slice(-6).join('\n'), 600)),
+          ].join('\n'),
+          { ephemeral: true },
+        );
       }
 
       case 'scan': {
