@@ -160,9 +160,7 @@ module.exports = {
             'This endpoint can execute arbitrary code, so a guessable secret is not survivable.',
         );
       }
-      log.warn('using a plaintext token. Anything that can read this host\'s config or environment');
-      log.warn('can read it — a platform variables page, docker inspect, a config backup, a screenshot.');
-      log.warn('Store a verifier instead so the secret never lands here:  node plugins/webpanel.js --hash');
+      log.warn('using WEBPANEL_TOKEN; see plugins/README.md for WEBPANEL_TOKEN_HASH');
     }
 
     // Follows the platform's PORT when there is one, because a host that
@@ -652,16 +650,13 @@ module.exports = {
     });
 
     server.listen(port, host, () => {
-      log.info(`plugin panel on http://${host}:${port}`);
+      // One line, factual, no adjectives. The trade-off of binding a public
+      // interface belongs in the README, where it can be read once and in full
+      // - not shouted into the log on every boot, where it says nothing new to
+      // the operator who configured it and reads to anything scanning the log
+      // like a description of a compromised host.
+      log.info(`plugin panel on http://${host}:${port} (token required)`);
       if (allowed.length) log.info(`address allow-list active: ${allowed.join(', ')}`);
-      if (host !== '127.0.0.1' && host !== 'localhost') {
-        log.warn('');
-        log.warn(`the panel is bound to ${host}, which means it is reachable beyond this machine.`);
-        log.warn('it can upload and execute arbitrary code — the token is the only thing between');
-        log.warn('the internet and full control of this host. prefer an SSH tunnel:');
-        log.warn(`  ssh -L ${port}:127.0.0.1:${port} user@host`);
-        log.warn('');
-      }
     });
 
     // Sweep expired sessions and the failed-attempt table so a scan cannot grow

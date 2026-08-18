@@ -414,8 +414,24 @@ localhost there is both unreachable and useless for that.
 **Understand what that means.** On a PaaS the panel is on the service's public
 URL, and it runs uploaded code inside the bot process — the credential is
 equivalent to a shell on that host. Failed attempts are rate-limited and lock
-out, the secret is exchanged for a session token at login, and only a scrypt
-verifier is stored. A long random secret is still doing most of the work.
+out for 15 minutes, the secret is exchanged for a session token at login, and
+only a scrypt verifier is stored. A long random secret is still doing most of
+the work.
+
+Two ways to reduce the exposure:
+
+- `config.webpanel.allow` in `plugins.json` takes a list of addresses; anything
+  else is refused before authentication is attempted.
+- On a host you can reach by SSH, leave it on localhost and forward the port
+  instead of publishing it:
+
+  ```bash
+  ssh -L 8787:127.0.0.1:8787 you@your-server
+  ```
+
+Prefer `WEBPANEL_TOKEN_HASH` over `WEBPANEL_TOKEN`: the former stores a verifier,
+so a copy of the environment — a platform variables page, `docker inspect`, a
+config backup, a screenshot — does not yield a usable credential.
 
 If all you need is for the platform to see a listening port, `httpserver.js` is
 the smaller target: same `PORT` rule, but it only reports status and has no way
