@@ -531,6 +531,28 @@ or newer gets that 45 MB back.**
 It only acts when a container limit is actually detected, the limit is under
 1 GB, and nobody set the flag themselves. `HEAP_AUTOSIZE=false` turns it off.
 
+### npm install fails, or a plugin cannot find its package
+
+Two separate problems with the same origin — a container where the project is
+read-only and only `/tmp` is writable.
+
+npm derives its cache from `HOME`, and fails before it fetches anything if that
+directory does not exist, with a message that blames the network:
+
+```
+Invalid response body while trying to fetch https://registry.npmjs.org/ws:
+ENOENT: no such file or directory, mkdir '/home/node/.npm'
+```
+
+The bot now passes npm an explicit cache directory, so this should not appear.
+Packages themselves go to the first writable of: the project directory,
+`DATA_DIR/npm`, then a temporary directory. `/plugin npm` reports which was used,
+and plugins can `require()` from any of them. Set `PLUGIN_MODULES_DIR` to choose
+explicitly.
+
+Only the last of those is lost on restart, and the install says so when it
+happens. If you see that, point `DATA_DIR` at something that persists.
+
 ### Every command answers twice, or logs "already answered by somebody else"
 
 Two copies of the bot are running on the same token — commonly an old container

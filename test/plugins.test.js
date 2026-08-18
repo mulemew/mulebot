@@ -759,3 +759,41 @@ test('npm is given a writable cache instead of inheriting a broken HOME', () => 
     else process.env.HOME = before;
   }
 });
+
+test('packages go somewhere writable when the project directory is not', () => {
+  const { PluginHost } = require('../src/core/plugins');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const make = (config) => new PluginHost({ config, log }, { dir: config.pluginsDir, log });
+
+  const writableRoot = tempDir('mod-root-');
+  const dataDir = tempDir('mod-data-');
+
+  // Normal case: everything beside discord.js, one node_modules.
+  const plain = make({ rootDir: writableRoot, dataDir, pluginsDir: writableRoot });
+  assert.equal(plain.modulesDir.dir, writableRoot);
+  assert.equal(plain.modulesDir.temporary, false);
+
+  // A read-only project, which is how plenty of containers are mounted. Using
+  // a path under a regular file makes mkdir fail the same way, on any platform.
+  const blocker = path.join(tempDir('mod-block-'), 'file');
+  fs.writeFileSync(blocker, 'not a directory');
+  const readOnly = make({ rootDir: path.join(blocker, 'app'), dataDir, pluginsDir: dataDir });
+  assert.equal(readOnly.modulesDir.dir, path.join(dataDir, 'npm'), 'falls back to the data directory');
+  assert.equal(readOnly.modulesDir.temporary, false, 'the data directory persists, so this is not temporary');
+
+  // An explicit override wins over both.
+  const chosen = tempDir('mod-explicit-');
+  process.env.PLUGIN_MODULES_DIR = chosen;
+  try {
+    const overridden = make({ rootDir: writableRoot, dataDir, pluginsDir: writableRoot });
+    assert.equal(overridden.modulesDir.dir, chosen);
+  } finally {
+    delete process.env.PLUGIN_MODULES_DIR;
+  }
+
+  // npm must not adopt a parent's package.json and rewrite the bot's deps.
+  const prefix = tempDir('mod-prefix-');
+  readOnly.ensureNpmPrefix(prefix);
+  const manifest = JSON.parse(fs.readFileSync(path.join(prefix, 'package.json'), 'utf8'));
+  assert.equal(manifest.private, true);
+});

@@ -871,6 +871,11 @@ class PluginHost {
     // the error.
     const fallback = Module.createRequire(path.join(this.bot.config.rootDir, 'index.js'));
 
+    // Third resolver, for packages /plugin npm had to install outside the
+    // project because the project is read-only. Identical to fallback when the
+    // project is writable, which is the ordinary case.
+    const installed = Module.createRequire(path.join(this.modulesDir.dir, 'index.js'));
+
     const resolveEither = (id) => {
       try {
         return real(id);
@@ -881,13 +886,19 @@ class PluginHost {
           return fallback(id);
         } catch (e2) {
           if (e2.code !== 'MODULE_NOT_FOUND') throw e2;
+          try {
+            return installed(id);
+          } catch (e3) {
+            if (e3.code !== 'MODULE_NOT_FOUND') throw e3;
+          }
           // Node's own message ends with a require stack pointing at the bot's
           // index.js - an artefact of the fallback resolver above, and actively
           // misleading to someone whose plugin is missing a package. Replace it
           // with the two places that would actually fix it.
           const err = new Error(
             `Cannot find module '${id}'. A plugin's dependencies are not installed automatically.\n` +
-              `  Install it for every plugin:  npm install ${id}   (in ${this.bot.config.rootDir})\n` +
+              `  Install it from Discord:      /plugin npm package:${id}\n` +
+              `  Or from a shell:              npm install ${id}   (in ${this.modulesDir.dir})\n` +
               `  Or keep it with this plugin:  make ${path.basename(file, path.extname(file))} a directory ` +
               `with its own package.json and node_modules, and an index.js entry point.`,
           );
@@ -924,7 +935,11 @@ class PluginHost {
         return real.resolve(id);
       } catch (e) {
         if (id.startsWith('.') || path.isAbsolute(id)) throw e;
-        return fallback.resolve(id);
+        try {
+          return fallback.resolve(id);
+        } catch {
+          return installed.resolve(id);
+        }
       }
     };
     wrapped.cache = real.cache;
@@ -967,10 +982,82 @@ class PluginHost {
     if (!valid) {
       return { ok: false, code: -1, output: `"${spec}" is not a valid npm package name.` };
     }
-    this.log.info(`installing npm package ${valid}`);
-    const result = await this.runNpm(['install', valid, '--no-audit', '--no-fund', '--omit=dev'], this.bot.config.rootDir);
+    const target = this.modulesDir;
+    try {
+      this.ensureNpmPrefix(target.dir);
+    } catch (e) {
+      return { ok: false, code: -1, output: `cannot prepare ${target.dir}: ${e.message}` };
+    }
+
+    this.log.info(`installing npm package ${valid} into ${target.dir} (${target.why})`);
+    const result = await this.runNpm(
+      ['install', valid, '--no-audit', '--no-fund', '--omit=dev', '--prefix', target.dir],
+      target.dir,
+    );
     this.log.info(`npm install ${valid} exited ${result.code}`);
-    return { ...result, spec: valid };
+    if (result.ok && target.temporary) {
+      this.log.warn(`${valid} went to ${target.dir} and will be gone after a restart`);
+    }
+    return { ...result, spec: valid, dir: target.dir, temporary: target.temporary, why: target.why };
+  }
+
+  /**
+   * Where npm-installed packages go.
+   *
+   * Normally the project directory, beside discord.js, so there is one
+   * node_modules and nothing to explain. But a container may mount the project
+   * read-only with /tmp as the only writable place, and then installing into the
+   * project is impossible rather than merely untidy. The order below prefers
+   * permanence and degrades to somewhere that works, reporting which.
+   *
+   * Cached, because a plugin loaded at boot may need a package installed during
+   * an earlier run, before any install has happened this time.
+   */
+  get modulesDir() {
+    if (this._modulesDir) return this._modulesDir;
+    const writable = require('./writable');
+
+    const candidates = process.env.PLUGIN_MODULES_DIR
+      ? [{ dir: path.resolve(process.env.PLUGIN_MODULES_DIR), why: 'PLUGIN_MODULES_DIR' }]
+      : [
+          { dir: this.bot.config.rootDir, why: 'the project directory' },
+          { dir: path.join(this.bot.config.dataDir, 'npm'), why: 'the data directory' },
+        ];
+
+    for (const candidate of candidates) {
+      if (writable.check(candidate.dir).ok) {
+        this._modulesDir = { ...candidate, temporary: false };
+        return this._modulesDir;
+      }
+    }
+
+    // Last resort. Packages here do not survive a restart, which is a real
+    // limitation rather than a detail, so every install says so.
+    this._modulesDir = {
+      dir: writable.scratchDir('npm'),
+      why: 'a temporary directory, because nothing else was writable',
+      temporary: true,
+    };
+    return this._modulesDir;
+  }
+
+  /**
+   * npm walks up from --prefix looking for a package.json and will adopt one
+   * belonging to a parent directory. Giving it its own stops an install into
+   * /tmp from rewriting the bot's dependency list.
+   */
+  ensureNpmPrefix(dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    const manifest = path.join(dir, 'package.json');
+    if (fs.existsSync(manifest)) return;
+    fs.writeFileSync(
+      manifest,
+      JSON.stringify(
+        { name: 'mulebot-plugin-modules', private: true, description: 'Packages installed with /plugin npm.' },
+        null,
+        2,
+      ) + '\n',
+    );
   }
 
   /**
@@ -994,7 +1081,8 @@ class PluginHost {
     let base = path.join(this.bot.config.dataDir, '.npm');
 
     if (!writable.check(base).ok) {
-      base = writable.scratchDir('npm-cache');
+      base = path.join(this.modulesDir.dir, '.npm-cache');
+      if (!writable.check(base).ok) base = writable.scratchDir('npm-cache');
       this.log.debug(`npm cache falls back to ${base}; the data directory is not writable`);
     }
 

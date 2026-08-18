@@ -482,9 +482,19 @@ const plugin = {
           'Package installed',
           [
             `\`${spec}\` is now available to every plugin via \`require()\`.`,
+            `Installed into \`${result.dir}\` — ${result.why}.`,
+            // Worth saying loudly rather than leaving to be discovered when a
+            // plugin stops loading after an unrelated restart.
+            result.temporary
+              ? '\n⚠️ That directory does not survive a restart, so this package will ' +
+                'need installing again. To keep it, point `DATA_DIR` or ' +
+                '`PLUGIN_MODULES_DIR` at somewhere writable that persists.'
+              : '',
             '',
             codeBlock(truncate(result.output.split('\n').slice(-6).join('\n'), 600)),
-          ].join('\n'),
+          ]
+            .filter(Boolean)
+            .join('\n'),
           { ephemeral: true },
         );
       }
