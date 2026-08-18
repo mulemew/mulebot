@@ -1048,7 +1048,6 @@ function loadRemotes() {
         '<a href="#" onclick="forget(\\'' + esc(n) + '\\');return false" style="color:var(--bad)">forget</a>';
     }).join(' · ');
   }).catch(function () {});
-  loadRemotes();
 }
 
 function forget(name) {
