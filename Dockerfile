@@ -36,12 +36,29 @@ ENV NODE_ENV=production
 
 VOLUME ["/app/data"]
 
-# Uses the bundled httpserver plugin. Drop this if you disable that plugin.
-# /health returns 503 until the gateway connects, which is exactly the
-# behaviour a healthcheck wants during startup.
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
+# No HEALTHCHECK, deliberately.
+#
+# The previous one probed a hardcoded port 3000 for the httpserver plugin. That
+# plugin ships disabled, so nothing ever answered: the container was unhealthy
+# from its first check onwards, and a platform that restarts unhealthy
+# containers restarted it forever, with nothing in the bot's log to explain why.
+# A check that cannot pass is worse than no check.
+#
+# A Discord bot needs no inbound port at all. If the platform requires one,
+# enable a plugin that provides it - both follow the injected PORT:
+#
+#   httpserver   status endpoint, read only
+#   webpanel     management UI, requires a credential
+#
+# A platform-level TCP check against PORT then passes. To also have a
+# container-level check, uncomment this - it follows PORT rather than assuming:
+#
+# HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+#   CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/" >/dev/null 2>&1 || exit 1
+
+# No EXPOSE either. It is metadata, but some platforms read it to decide which
+# port to route and probe - and naming 3000 when the listener follows the
+# injected PORT points them at a port nothing is on.
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "index.js"]
