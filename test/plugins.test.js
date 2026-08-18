@@ -797,3 +797,39 @@ test('packages go somewhere writable when the project directory is not', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(prefix, 'package.json'), 'utf8'));
   assert.equal(manifest.private, true);
 });
+
+test('plugin switches are settable from the environment, not only the file', async () => {
+  const { PluginHost } = require('../src/core/plugins');
+  const dir = tempDir('penv-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  fs.writeFileSync(path.join(dir, 'plugins.json'), JSON.stringify({ disabled: ['fromfile'], config: {} }));
+
+  const read = () => {
+    const host = new PluginHost({ config: { rootDir: dir, dataDir: dir, pluginsDir: dir } }, { dir, log });
+    host.readManifest();
+    return host.manifest.disabled;
+  };
+
+  const saved = [process.env.PLUGINS_DISABLED, process.env.PLUGINS_ALLOW];
+  try {
+    delete process.env.PLUGINS_DISABLED;
+    delete process.env.PLUGINS_ALLOW;
+    assert.deepEqual(read(), ['fromfile'], 'the file still decides when nothing is set');
+
+    process.env.PLUGINS_DISABLED = 'one, two';
+    assert.deepEqual(read(), ['fromfile', 'one', 'two'], 'the environment adds to the file, spaces trimmed');
+
+    // The point of this: a container where plugins.json cannot be edited.
+    process.env.PLUGINS_ALLOW = 'fromfile';
+    assert.deepEqual(read(), ['one', 'two'], 'and can re-enable what the file disabled');
+
+    process.env.PLUGINS_DISABLED = 'both';
+    process.env.PLUGINS_ALLOW = 'both';
+    assert.deepEqual(read(), ['fromfile'], 'naming one in both means load it: the explicit yes wins');
+  } finally {
+    for (const [k, v] of [['PLUGINS_DISABLED', saved[0]], ['PLUGINS_ALLOW', saved[1]]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});

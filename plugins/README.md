@@ -382,6 +382,20 @@ Installing a plugin is exactly as consequential as editing the bot's source.
 Only run code you have read or trust. On a host where this directory is not
 exclusively yours, set `PLUGINS_ENABLED=false`.
 
+## Turning plugins on and off
+
+`plugins/plugins.json` lists names to skip in `disabled`. Where that file cannot
+be edited — a read-only project directory, which is normal on a PaaS — the same
+switches are environment variables:
+
+| | |
+|---|---|
+| `PLUGINS_DISABLED` | comma-separated names to skip |
+| `PLUGINS_ALLOW` | names to load even though `plugins.json` disables them |
+| `PLUGINS_ENABLED=false` | the master switch: load nothing at all |
+
+A name in both lists loads. The boot log says which variable acted.
+
 ## webpanel.js
 
 A browser UI for managing plugins: upload, install from npm or a URL, load,

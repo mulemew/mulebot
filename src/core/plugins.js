@@ -449,18 +449,48 @@ class PluginHost {
 
   // ---------- discovery ----------
 
-  /** Reads plugins/plugins.json, which is optional. */
+  /**
+   * Reads plugins/plugins.json, which is optional, then lets the environment
+   * override it.
+   *
+   * The file is the natural place for this, and unusable on the hosts that need
+   * it most: a container that mounts the project read-only gives you no way to
+   * edit it, and a copy written to a scratch directory is gone at the next
+   * restart. Two environment variables cover both directions.
+   */
   readManifest() {
     const file = path.join(this.dir, 'plugins.json');
     try {
-      if (!fs.existsSync(file)) return;
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      this.manifest = {
-        disabled: Array.isArray(parsed.disabled) ? parsed.disabled : [],
-        config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {},
-      };
+      if (fs.existsSync(file)) {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        this.manifest = {
+          disabled: Array.isArray(parsed.disabled) ? parsed.disabled : [],
+          config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {},
+        };
+      }
     } catch (e) {
       this.log.warn(`plugins.json is unreadable, ignoring it: ${e.message}`);
+    }
+
+    const names = (value) =>
+      String(value || '')
+        .split(',')
+        .map((n) => n.trim())
+        .filter(Boolean);
+
+    const off = names(process.env.PLUGINS_DISABLED);
+    const on = names(process.env.PLUGINS_ALLOW);
+
+    if (off.length) {
+      this.manifest.disabled = [...new Set([...this.manifest.disabled, ...off])];
+      this.log.info(`PLUGINS_DISABLED skips: ${off.join(', ')}`);
+    }
+
+    // Applied second, so a name in both wins here: naming something explicitly
+    // is a more deliberate act than leaving a default in place.
+    if (on.length) {
+      this.manifest.disabled = this.manifest.disabled.filter((n) => !on.includes(n));
+      this.log.info(`PLUGINS_ALLOW loads: ${on.join(', ')}`);
     }
   }
 
