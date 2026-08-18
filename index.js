@@ -273,7 +273,20 @@ process.on('uncaughtException', (e) => bootLog('[UNCAUGHT EXCEPTION]', e));
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    bootLog(`[SHUTDOWN] ${signal} received, flushing state...`);
+    // State at the moment the signal arrived, because that is the one question
+    // the log cannot otherwise answer: a platform that stops a container for
+    // exceeding its memory allowance and a platform that stops it for any other
+    // reason send the identical signal, and the difference is only visible in
+    // these numbers.
+    const mem = process.memoryUsage();
+    const mb = (n) => Math.round(n / 1024 / 1024);
+    const limit = require('./src/core/cache').containerMemoryLimitMb();
+    bootLog(
+      `[SHUTDOWN] ${signal} received after ${Math.round((Date.now() - bot.startedAt) / 1000)}s — ` +
+        `rss ${mb(mem.rss)}MB, heap ${mb(mem.heapUsed)}/${mb(mem.heapTotal)}MB, external ${mb(mem.external)}MB` +
+        (limit ? `, limit ${limit}MB` : ''),
+    );
+    bootLog('[SHUTDOWN] flushing state...');
     try {
       await bot.shutdown();
       bootLog('[SHUTDOWN] State flushed, exiting cleanly.');

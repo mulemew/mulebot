@@ -179,11 +179,29 @@ class Bot {
     // code explains it. One number in the log does.
     const LAG_SAMPLE_MS = 5000;
     let lastSample = Date.now();
+
+    // Memory is sampled on the same tick, but reported only when it crosses a
+    // band it has not reached before. A host that stops the container for
+    // exceeding its allowance leaves no other trace, and a line every five
+    // seconds would be noise in every deployment that is fine.
+    const limitMb = this.cacheProfile?.detectedLimitMb || 0;
+    let reportedBand = 0;
+
     this.lagTimer = setInterval(() => {
       const now = Date.now();
       const lag = now - lastSample - LAG_SAMPLE_MS;
       lastSample = now;
       this.lagPeak = Math.max(this.lagPeak, lag);
+
+      if (limitMb) {
+        const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        const share = rssMb / limitMb;
+        const band = share >= 0.9 ? 90 : share >= 0.8 ? 80 : share >= 0.7 ? 70 : 0;
+        if (band > reportedBand) {
+          reportedBand = band;
+          this.log.warn(`memory at ${rssMb}MB of the ${limitMb}MB limit (${Math.round(share * 100)}%)`);
+        }
+      }
       if (lag >= 1000) {
         this.log.warn(
           `the process was unresponsive for ${lag}ms — commands that arrive during a stall this long ` +
