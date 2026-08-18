@@ -292,7 +292,12 @@ module.exports = {
         'x-content-type-options': 'nosniff',
         // The UI is entirely inline and loads nothing external, so it can run
         // under a policy that forbids remote script outright.
-        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+        // connect-src is not optional: without it fetch falls back to
+        // default-src 'none' and the page cannot reach its own login endpoint.
+        // The browser reports that as "Failed to fetch", which reads like a
+        // network fault and sends you looking at entirely the wrong thing.
+        'content-security-policy':
+          "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
         'referrer-policy': 'no-referrer',
       });
       res.end(body);
@@ -682,7 +687,7 @@ const PAGE = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plugin panel</title>
+<title>Sign in</title>
 <style>
   :root {
     --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e9ef; --dim:#8b93a7;
@@ -728,9 +733,7 @@ const PAGE = `<!doctype html>
 <body>
 
 <div id="gate" class="gate card">
-  <h2>Plugin panel</h2>
-  <p class="note">This panel uploads and runs code inside the bot process. Enter your secret — the server stores only a scrypt verifier of it, never the secret itself.</p>
-  <div class="row" style="margin-top:12px">
+  <div class="row">
     <input id="tok" type="password" class="grow" placeholder="secret" autocomplete="current-password">
     <button onclick="unlock()">Enter</button>
   </div>
