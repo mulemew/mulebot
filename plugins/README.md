@@ -381,3 +381,42 @@ boundary and this host does not pretend it is.
 Installing a plugin is exactly as consequential as editing the bot's source.
 Only run code you have read or trust. On a host where this directory is not
 exclusively yours, set `PLUGINS_ENABLED=false`.
+
+## webpanel.js
+
+A browser UI for managing plugins: upload, install from npm or a URL, load,
+unload, view logs. Ships enabled, but **refuses to start until a credential is
+set** — so it does nothing on a fresh clone.
+
+Generate a verifier, which keeps the secret off the host entirely:
+
+```bash
+node plugins/webpanel.js --hash
+```
+
+Put the printed `scrypt$...` string in `WEBPANEL_TOKEN_HASH`, or in
+`plugins.json` as `config.webpanel.tokenHash`. A plaintext `WEBPANEL_TOKEN` of at
+least 24 characters also works and warns.
+
+### Where it listens
+
+| | Port | Interface |
+|---|---|---|
+| Platform injected `PORT` | that port | `0.0.0.0` |
+| Otherwise | `WEBPANEL_PORT`, else 8787 | `127.0.0.1` |
+
+`config.port` and `config.host` in `plugins.json` override both.
+
+Following `PORT` is what makes this usable on a PaaS: a host that injects it
+will not keep a service alive without a listener on it, and a panel bound to
+localhost there is both unreachable and useless for that.
+
+**Understand what that means.** On a PaaS the panel is on the service's public
+URL, and it runs uploaded code inside the bot process — the credential is
+equivalent to a shell on that host. Failed attempts are rate-limited and lock
+out, the secret is exchanged for a session token at login, and only a scrypt
+verifier is stored. A long random secret is still doing most of the work.
+
+If all you need is for the platform to see a listening port, `httpserver.js` is
+the smaller target: same `PORT` rule, but it only reports status and has no way
+to change anything.
