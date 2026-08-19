@@ -69,6 +69,16 @@ const NATIVE_EXTENSIONS = new Set(['.node', '.so', '.dll', '.dylib']);
 const CLOSERS = ['close', 'destroy', 'stop', 'kill', 'disconnect', 'end', 'terminate'];
 
 /**
+ * Of those, the ones whose first argument is a completion callback.
+ *
+ * The rest take something else entirely - `kill(signal)` is the one that bites,
+ * because passing it a function throws "Unknown signal" and leaves the child
+ * process running. Anything not listed here is called with no arguments and
+ * waited on through its 'exit' / 'close' / 'end' event instead.
+ */
+const CALLBACK_CLOSERS = new Set(['close', 'end']);
+
+/**
  * The object a plugin receives, both as the `plugin` free variable and as the
  * argument to `init()`. Everything registered through it is remembered so it
  * can be undone.
@@ -359,8 +369,21 @@ class PluginContext {
             }
           };
           try {
-            const returned = resource[method](done);
+            // A completion callback is only correct for the methods that take
+            // one. ChildProcess.kill() takes a *signal*, so handing it a
+            // function makes it throw "Unknown signal" and the child survives
+            // the unload - a leaked OS process for every reload, which on a
+            // small host is the difference between working and being killed.
+            // Where no callback is accepted, wait for the object to say it is
+            // finished instead.
+            const returned = CALLBACK_CLOSERS.has(method) ? resource[method](done) : resource[method]();
             if (returned && typeof returned.then === 'function') returned.then(done, done);
+
+            if (!CALLBACK_CLOSERS.has(method) && typeof resource.once === 'function') {
+              for (const event of ['exit', 'close', 'end']) resource.once(event, done);
+            } else if (!CALLBACK_CLOSERS.has(method)) {
+              done();
+            }
           } catch (e) {
             problems.push(`${method}(): ${e.message}`);
             done();

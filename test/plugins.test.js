@@ -872,3 +872,50 @@ test('plugin URLs can be configured, so a host with no disk still gets them', as
     served.close();
   }
 });
+
+test('a tracked child process is killed on unload, not left running', async () => {
+  const { PluginHost } = require('../src/core/plugins');
+  const dir = tempDir('cproc-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const bot = {
+    config: { rootDir: dir, dataDir: dir, pluginsDir: dir, saveIntervalMs: 1000 },
+    log,
+    registry: { remove() {} },
+    components: { unregister() {} },
+    scheduler: { unregister() {} },
+    client: { on() {}, once() {}, removeListener() {} },
+  };
+
+  const file = path.join(dir, 'spawner.js');
+  fs.writeFileSync(
+    file,
+    "const { spawn } = require('node:child_process');\n" +
+      "const c = spawn(process.execPath, ['-e', 'setInterval(function(){},1e9)']);\n" +
+      'plugin.track(c);\n' +
+      'globalThis.__childPid = c.pid;\n',
+  );
+
+  const host = new PluginHost(bot, { dir, log });
+  await host.loadAll();
+
+  const pid = globalThis.__childPid;
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert.ok(pid && alive(), 'the child is running to begin with');
+
+  const result = await host.unload('spawner');
+
+  // kill() takes a signal, so handing it the completion callback used to throw
+  // "Unknown signal" and leave the process behind - once per reload.
+  assert.deepEqual(result.problems, [], 'closing reports no problem');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(alive(), false, 'the child is gone');
+
+  delete globalThis.__childPid;
+});
