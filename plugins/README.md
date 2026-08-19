@@ -396,6 +396,30 @@ switches are environment variables:
 
 A name in both lists loads. The boot log says which variable acted.
 
+## Loading from a URL on a host with no disk
+
+A container that mounts the project read-only, or gives you only `/tmp`, loses
+anything installed through `/plugin install` when it restarts. Listing the URL
+in the configuration instead makes it part of the deployment:
+
+```ini
+PLUGINS_URLS=https://example.com/myplugin.js,https://example.com/tools.zip
+```
+
+or in `plugins/plugins.json`:
+
+```json
+{ "urls": ["https://example.com/myplugin.js"] }
+```
+
+Each is fetched at boot, loaded into memory, and never written to disk — so the
+next restart fetches it again. Plain `.js`, `.zip` and `.tar.gz` all work, and
+the plugin name comes from the filename in the URL.
+
+The fetched code runs inside the bot process with the bot's privileges. Only
+list URLs you control: whoever can change what that URL serves can run anything
+they like here, and a restart is all it takes.
+
 ## webpanel.js
 
 A browser UI for managing plugins: upload, install from npm or a URL, load,

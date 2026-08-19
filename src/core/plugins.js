@@ -444,7 +444,7 @@ class PluginHost {
     this.commandsDirty = false;
     this.watcher = null;
     this.watchTimers = new Map();
-    this.manifest = { disabled: [], config: {} };
+    this.manifest = { disabled: [], config: {}, urls: [] };
   }
 
   // ---------- discovery ----------
@@ -466,6 +466,7 @@ class PluginHost {
         this.manifest = {
           disabled: Array.isArray(parsed.disabled) ? parsed.disabled : [],
           config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {},
+          urls: Array.isArray(parsed.urls) ? parsed.urls : [],
         };
       }
     } catch (e) {
@@ -492,6 +493,9 @@ class PluginHost {
       this.manifest.disabled = this.manifest.disabled.filter((n) => !on.includes(n));
       this.log.info(`PLUGINS_ALLOW loads: ${on.join(', ')}`);
     }
+
+    const urls = names(process.env.PLUGINS_URLS);
+    if (urls.length) this.manifest.urls = [...new Set([...this.manifest.urls, ...urls])];
   }
 
   /**
@@ -1472,21 +1476,54 @@ class PluginHost {
   async restoreRemotes() {
     const remotes = this.readRemotes();
     const memoryOnes = Object.entries(remotes).filter(([, r]) => r.mode === 'memory');
-    if (!memoryOnes.length) return { restored: 0, failed: 0 };
+
+    // Configured URLs are fetched on every boot, which is the only arrangement
+    // that works on a host with no persistence: the remembered list above lives
+    // in the plugins directory, and when that directory is a scratch path the
+    // list is gone by the time it would be read. A URL in the environment or in
+    // plugins.json survives because it is part of the deployment, not of the
+    // container's disk.
+    const configured = (this.manifest.urls || [])
+      .map((u) => String(u).trim())
+      .filter(Boolean)
+      .filter((u) => !memoryOnes.some(([, r]) => r.url === u));
+
+    if (!memoryOnes.length && !configured.length) return { restored: 0, failed: 0 };
 
     let restored = 0;
     let failed = 0;
-    for (const [name, record] of memoryOnes) {
+
+    const fetchOne = async (url, name, label) => {
       try {
-        const result = await this.installFromUrl(record.url, { name, mode: 'memory', remember: false });
-        result.ok ? restored++ : failed++;
-        if (!result.ok) this.log.warn(`could not restore in-memory plugin "${name}": ${result.error}`);
+        const result = await this.installFromUrl(url, { name, mode: 'memory', remember: false });
+        if (result.ok) {
+          restored++;
+          return;
+        }
+        failed++;
+        this.log.warn(`could not load ${label} from ${url}: ${result.error}`);
       } catch (e) {
         failed++;
-        this.log.warn(`could not restore in-memory plugin "${name}" from ${record.url}: ${e.message}`);
+        this.log.warn(`could not load ${label} from ${url}: ${e.message}`);
       }
+    };
+
+    for (const [name, record] of memoryOnes) {
+      await fetchOne(record.url, name, `in-memory plugin "${name}"`);
     }
-    this.log.info(`restored ${restored} in-memory plugin(s) from their source URLs${failed ? `, ${failed} failed` : ''}`);
+    for (const url of configured) {
+      // No name: installFromUrl derives one from the URL, the same as it does
+      // for /plugin install.
+      await fetchOne(url, undefined, 'configured plugin');
+    }
+
+    const from = [
+      memoryOnes.length ? `${memoryOnes.length} remembered` : '',
+      configured.length ? `${configured.length} configured` : '',
+    ]
+      .filter(Boolean)
+      .join(' + ');
+    this.log.info(`loaded ${restored} plugin(s) from URLs (${from})${failed ? `, ${failed} failed` : ''}`);
     return { restored, failed };
   }
 

@@ -833,3 +833,42 @@ test('plugin switches are settable from the environment, not only the file', asy
     }
   }
 });
+
+test('plugin URLs can be configured, so a host with no disk still gets them', async () => {
+  const http = require('node:http');
+  const { PluginHost } = require('../src/core/plugins');
+
+  // A tiny origin serving one plugin.
+  const served = await new Promise((resolve) => {
+    const s = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/javascript' });
+      res.end('plugin.log.info("from a url");\n');
+    });
+    s.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const url = `http://127.0.0.1:${served.address().port}/fromurl.js`;
+
+  const dir = tempDir('purl-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const bot = { config: { rootDir: dir, dataDir: dir, pluginsDir: dir, saveIntervalMs: 1000 }, log };
+
+  const saved = process.env.PLUGINS_URLS;
+  try {
+    process.env.PLUGINS_URLS = url;
+    const host = new PluginHost(bot, { dir, log });
+    host.readManifest();
+    assert.deepEqual(host.manifest.urls, [url], 'the environment supplies the list');
+
+    const result = await host.restoreRemotes();
+    assert.equal(result.restored, 1, 'and it is fetched at boot with nothing remembered on disk');
+    assert.equal(result.failed, 0);
+    assert.ok(host.plugins.has('fromurl'), 'the plugin is loaded under a name derived from the URL');
+
+    // The point of the feature: nothing was written, so a restart repeats this.
+    assert.equal(fs.existsSync(path.join(dir, 'fromurl.js')), false, 'memory mode leaves no file behind');
+  } finally {
+    if (saved === undefined) delete process.env.PLUGINS_URLS;
+    else process.env.PLUGINS_URLS = saved;
+    served.close();
+  }
+});
