@@ -873,6 +873,68 @@ test('plugin URLs can be configured, so a host with no disk still gets them', as
   }
 });
 
+test('a spawned child is reclaimed on unload without the plugin asking', async () => {
+  const { PluginHost } = require('../src/core/plugins');
+  const dir = tempDir('autocp-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const bot = {
+    config: { rootDir: dir, dataDir: dir, pluginsDir: dir, saveIntervalMs: 1000 },
+    log,
+    registry: { remove() {} },
+    components: { unregister() {} },
+    scheduler: { unregister() {} },
+    client: { on() {}, once() {}, removeListener() {} },
+  };
+
+  // Neither plugin calls plugin.track(). That is the point: a plain script that
+  // knows nothing about the host still unloads cleanly.
+  const IDLE = "['-e', 'setInterval(function(){},1e9)']";
+  fs.writeFileSync(
+    path.join(dir, 'plain.js'),
+    [
+      "const { spawn } = require('node:child_process');",
+      `globalThis.__plainPid = spawn(process.execPath, ${IDLE}).pid;`,
+    ].join('\n'),
+  );
+  fs.writeFileSync(
+    path.join(dir, 'detach.js'),
+    [
+      "const { spawn } = require('node:child_process');",
+      `const c = spawn(process.execPath, ${IDLE}, { detached: true, stdio: 'ignore' });`,
+      'c.unref();',
+      'globalThis.__detachedPid = c.pid;',
+    ].join('\n'),
+  );
+
+  const host = new PluginHost(bot, { dir, log });
+  await host.loadAll();
+
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const plain = globalThis.__plainPid;
+  const detached = globalThis.__detachedPid;
+  assert.ok(alive(plain) && alive(detached), 'both children start out running');
+
+  await host.unload('plain');
+  await host.unload('detach');
+  await new Promise((r) => setTimeout(r, 500));
+
+  assert.equal(alive(plain), false, 'an ordinary child is killed with the plugin that spawned it');
+  // detached: true is the only way a plugin can say "this outlives me", so it
+  // is the only case left alone.
+  assert.equal(alive(detached), true, 'a detached child is deliberately left running');
+
+  process.kill(detached);
+  delete globalThis.__plainPid;
+  delete globalThis.__detachedPid;
+});
+
 test('a tracked child process is killed on unload, not left running', async () => {
   const { PluginHost } = require('../src/core/plugins');
   const dir = tempDir('cproc-');

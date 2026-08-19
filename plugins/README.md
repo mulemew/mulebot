@@ -396,6 +396,25 @@ switches are environment variables:
 
 A name in both lists loads. The boot log says which variable acted.
 
+## What gets cleaned up for you
+
+A plugin does not have to write cleanup code. Unloading it reclaims:
+
+| | |
+|---|---|
+| Timers | `setTimeout`, `setInterval`, `setImmediate` |
+| Servers | `createServer` from `http`, `https`, `http2`, `net`, `tls` — the port is released |
+| Child processes | `spawn`, `fork`, `exec`, `execFile` — killed |
+| Listeners, commands, buttons, scheduled tasks | anything registered through `plugin` |
+
+The one exception is deliberate: a child spawned with `detached: true` is left
+running, because that flag is the only way to say the process is meant to
+outlive its parent.
+
+Anything the host cannot see — a database driver's connection pool, a
+third-party client — hand to `plugin.track(resource)`, which closes it the same
+way.
+
 ## Loading from a URL on a host with no disk
 
 A container that mounts the project read-only, or gives you only `/tmp`, loses

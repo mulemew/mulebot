@@ -79,6 +79,28 @@ const CLOSERS = ['close', 'destroy', 'stop', 'kill', 'disconnect', 'end', 'termi
 const CALLBACK_CLOSERS = new Set(['close', 'end']);
 
 /**
+ * Core modules whose factory functions hand back something that has to be
+ * reclaimed, and which are therefore wrapped in the require a plugin sees.
+ *
+ * The point is that a plugin written as a plain script - no exports, no
+ * cleanup, nothing learned - still unloads cleanly. A listener that keeps a
+ * port and a child process that keeps running are the same kind of leak, and
+ * neither should need the plugin author to have thought about it.
+ *
+ * The synchronous child_process calls are absent on purpose: execSync and
+ * friends have already finished by the time they return, so there is nothing
+ * left to track.
+ */
+const TRACKED_FACTORIES = {
+  http: new Set(['createServer']),
+  https: new Set(['createServer']),
+  http2: new Set(['createServer', 'createSecureServer']),
+  net: new Set(['createServer']),
+  tls: new Set(['createServer']),
+  child_process: new Set(['spawn', 'fork', 'exec', 'execFile']),
+};
+
+/**
  * The object a plugin receives, both as the `plugin` free variable and as the
  * argument to `init()`. Everything registered through it is remembered so it
  * can be undone.
@@ -968,21 +990,36 @@ class PluginHost {
     const wrapped = (id) => {
       const loaded = resolveEither(id);
       const bare = String(id).replace(/^node:/, '');
-      if (bare !== 'http' && bare !== 'https' && bare !== 'net' && bare !== 'tls' && bare !== 'http2') return loaded;
+      const tracked = TRACKED_FACTORIES[bare];
+      if (!tracked) return loaded;
 
       // A Proxy keeps every other export intact, including lazy getters.
       return new Proxy(loaded, {
         get(target, prop, receiver) {
           const value = Reflect.get(target, prop, receiver);
-          if ((prop === 'createServer' || prop === 'createSecureServer') && typeof value === 'function') {
-            return (...args) => {
-              const server = value.apply(target, args);
-              context.track(server);
-              context.log.debug(`tracking a ${bare} server, it will be closed on unload`);
-              return server;
-            };
+          if (!tracked.has(prop) || typeof value !== 'function') {
+            return typeof value === 'function' ? value.bind(target) : value;
           }
-          return typeof value === 'function' ? value.bind(target) : value;
+
+          return (...args) => {
+            const created = value.apply(target, args);
+
+            // `detached: true` is a plugin saying, in the only way the runtime
+            // provides, that this process is meant to outlive its parent. That
+            // is the one case where killing it on unload would be wrong, so it
+            // is the one case left alone. Everything else is reclaimed: a
+            // spawned process that survives its plugin is a leak, and on a
+            // small host a reload loop of them is fatal.
+            const detached = args.some((a) => a && typeof a === 'object' && a.detached === true);
+            if (detached) {
+              context.log.debug(`${bare}.${String(prop)} was detached, so it is left running on unload`);
+              return created;
+            }
+
+            context.track(created);
+            context.log.debug(`tracking ${bare}.${String(prop)}, it will be closed on unload`);
+            return created;
+          };
         },
       });
     };
