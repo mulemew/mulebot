@@ -174,13 +174,18 @@ const owner = {
       case 'loglevel': {
         const level = ctx.str('level');
         const before = bot.log.level;
+        // Reaches every child logger, since they share the root's threshold
+        // rather than a copy of it.
         bot.log.setLevel(level);
-        // Child loggers were created with a copy of the threshold, so they are
-        // updated too - otherwise only the root logger would change.
-        for (const feature of Object.values(bot.features)) {
-          if (feature?.log?.setLevel) feature.log.setLevel(level);
-        }
-        return ctx.ok('Log level changed', `**${before}** → **${level}**`, { ephemeral: true });
+
+        const note =
+          level === 'silent'
+            ? '\n\nNothing will be logged, including fatal errors. Startup and shutdown lines are ' +
+              'written straight to stdout and are unaffected.\n' +
+              'This lasts until the next restart; set `LOG_LEVEL` to make it permanent.'
+            : '\n\nThis lasts until the next restart; set `LOG_LEVEL` to make it permanent.';
+
+        return ctx.ok('Log level changed', `**${before}** → **${level}**${note}`, { ephemeral: true });
       }
 
       case 'save': {

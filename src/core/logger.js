@@ -191,19 +191,34 @@ class Logger {
    */
   constructor(scope = 'bot', opts = {}) {
     this.scope = scope;
-    this.threshold = LEVELS[opts.level || process.env.LOG_LEVEL || 'info'] ?? LEVELS.info;
+    // The threshold lives in an object shared with every child, rather than
+    // being copied into each one. Copying meant a child was a snapshot: raising
+    // the level later changed the root and left `db`, `scheduler`, `commands`,
+    // `plugins` and the rest logging at whatever they were created with. There
+    // are two dozen of them, so "set the level to silent" was not silent.
+    this._level = { threshold: LEVELS[opts.level || process.env.LOG_LEVEL || 'info'] ?? LEVELS.info };
+  }
+
+  get threshold() {
+    return this._level.threshold;
+  }
+
+  set threshold(value) {
+    this._level.threshold = value;
   }
 
   /** Returns a logger that shares this one's threshold but tags a sub-scope. */
   child(scope) {
     const c = new Logger(`${this.scope}:${scope}`);
-    c.threshold = this.threshold;
+    // Shared, not copied - so a later setLevel reaches this child, and its own
+    // children, however deep, with no bookkeeping and nothing to leak.
+    c._level = this._level;
     return c;
   }
 
   setLevel(level) {
     if (LEVELS[level] === undefined) return false;
-    this.threshold = LEVELS[level];
+    this._level.threshold = LEVELS[level];
     return true;
   }
 

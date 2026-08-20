@@ -936,3 +936,27 @@ test('OWNER_IDS survives the shapes people actually paste', () => {
   assert.deepEqual(load('').owners, []);
   process.env.OWNER_IDS = '';
 });
+
+test('the log level reaches every child logger, not just the root', () => {
+  const { Logger } = require('../src/core/logger');
+
+  const root = new Logger('bot', { level: 'info' });
+  const db = root.child('db');
+  const plugins = root.child('plugins');
+  const onePlugin = plugins.child('myplugin');
+
+  // Children used to be created with a *copy* of the threshold, so /owner
+  // loglevel changed the root and left two dozen subsystems logging as before.
+  root.setLevel('silent');
+  for (const [name, logger] of [['db', db], ['plugins', plugins], ['plugin child', onePlugin]]) {
+    assert.equal(logger.level, 'silent', `${name} follows the root`);
+  }
+
+  root.setLevel('debug');
+  assert.equal(onePlugin.level, 'debug', 'and follows it back down');
+  assert.equal(root.child('made-later').level, 'debug', 'a child created afterwards starts at the current level');
+
+  // silent is above fatal, so it really does suppress everything.
+  const { LEVELS } = require('../src/core/logger');
+  assert.ok(LEVELS.silent > LEVELS.fatal, 'silent outranks fatal, so nothing survives it');
+});
