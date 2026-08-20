@@ -66,7 +66,7 @@ const NATIVE_EXTENSIONS = new Set(['.node', '.so', '.dll', '.dylib']);
  * instead called as a *preparatory* step before close(), because close() alone
  * never finishes while a keep-alive connection is open.
  */
-const CLOSERS = ['close', 'destroy', 'stop', 'kill', 'disconnect', 'end', 'terminate'];
+const CLOSERS = ['close', 'destroy', 'stop', 'kill', 'disconnect', 'end', 'terminate', 'unload'];
 
 /**
  * Of those, the ones whose first argument is a completion callback.

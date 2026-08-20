@@ -396,6 +396,41 @@ switches are environment variables:
 
 A name in both lists loads. The boot log says which variable acted.
 
+## Native code: two different things called .so
+
+`.node`, `.so`, `.dll` and `.dylib` dropped into the plugins directory are loaded
+with `process.dlopen`. That only works for a **Node addon** — something built
+against Node's own API with node-gyp or prebuild. The extension does not decide
+this; how the library was built does.
+
+An **ordinary C shared library** cannot be loaded that way, and the bot says so
+rather than failing cryptically:
+
+```
+libfoo.so is not a Node addon. process.dlopen only loads N-API/NAN addons
+built for Node, not an ordinary C shared library.
+```
+
+For those, use an FFI from inside a normal `.js` plugin. `koffi` needs no build
+step — it ships prebuilt binaries for 18 platforms, so it installs even where
+build scripts are blocked:
+
+```js
+const koffi = require('koffi');
+
+const lib = koffi.load('/path/to/libfoo.so');
+plugin.track(lib);                     // released on unload
+
+const add = lib.func('int add(int, int)');
+plugin.log.info('2 + 3 = ' + add(2, 3));
+```
+
+Install it with `/plugin npm package:koffi`, or put it in the plugin folder's
+own `package.json`.
+
+`plugin.track(lib)` matters: without it the library stays mapped into the
+process after the plugin unloads, and every reload maps it again.
+
 ## What gets cleaned up for you
 
 A plugin does not have to write cleanup code. Unloading it reclaims:
