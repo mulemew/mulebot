@@ -257,7 +257,10 @@ class Bot {
       I.GuildMessageReactions,
       I.GuildVoiceStates,
       I.GuildModeration,
-      I.DirectMessages,
+      // No DirectMessages. It was requested and never consumed - messageCreate
+      // returns immediately for anything without a guild - so it opened a feed
+      // of private conversations the bot has no use for. Sending a DM (a ticket
+      // transcript, a reminder) needs no intent; only receiving them does.
     ];
     if (withMembers) intents.push(I.GuildMembers);
     if (withContent) intents.push(I.MessageContent);

@@ -60,6 +60,19 @@ function init(bot) {
       if (message.channelId === board.channelId) return; // never star the starboard
       if (message.channel.nsfw && !board.nsfwAllowed) return;
 
+      // Even with nsfwAllowed on, age-restricted content may only be mirrored
+      // into a channel that is itself age-restricted. Discord's terms are about
+      // where the content ends up, not about whether the server opted in - and
+      // "allow NSFW sources" is an easy switch to flip without realising it
+      // republishes them somewhere unmarked.
+      if (message.channel.nsfw) {
+        const target = await bot.resolveChannel(message.guild, board.channelId);
+        if (!target?.nsfw) {
+          log.debug(`refusing to mirror an age-restricted message into ${board.channelId}, which is not age-restricted`);
+          return;
+        }
+      }
+
       let count = reaction.count || 0;
       // Self-stars are excluded by fetching the reactors, which costs a request;
       // only do it when the setting actually calls for it.

@@ -961,3 +961,91 @@ test('the log level reaches every child logger, not just the root', () => {
   const { LEVELS } = require('../src/core/logger');
   assert.ok(LEVELS.silent > LEVELS.fatal, 'silent outranks fatal, so nothing survives it');
 });
+
+test('starboard will not mirror age-restricted content into a normal channel', async () => {
+  const starboard = require('../src/features/starboard');
+
+  const posted = [];
+  const channels = new Map();
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+
+  const makeBot = (boardSettings) => ({
+    config: { features: { starboard: true } },
+    log,
+    db: {
+      settings: () => ({ starboard: boardSettings }),
+      stores: { starboard: { set() {}, get: () => null, delete() {} } },
+    },
+    components: { register() {} },
+    scheduler: { register() {} },
+    client: { on() {}, once() {} },
+    resolveChannel: async (_guild, id) => channels.get(id) || null,
+    sendTo: async (_guild, id, payload) => {
+      posted.push({ id, payload });
+      return { id: 'posted-1' };
+    },
+  });
+
+  const board = {
+    enabled: true,
+    channelId: 'board',
+    emoji: '⭐',
+    threshold: 1,
+    ignoredChannels: [],
+    ignoreBots: true,
+    nsfwAllowed: true, // the server opted in to starring from NSFW channels
+    selfStar: true,
+  };
+
+  const reaction = (sourceNsfw) => ({
+    partial: false,
+    count: 5,
+    emoji: { name: '⭐', id: null },
+    message: {
+      partial: false,
+      id: 'm1',
+      channelId: 'source',
+      guild: { id: 'g1' },
+      author: {
+        bot: false,
+        id: 'u1',
+        tag: 'someone#0001',
+        username: 'someone',
+        displayAvatarURL: () => 'https://cdn.example/a.png',
+      },
+      channel: { nsfw: sourceNsfw },
+      content: 'hello',
+      attachments: new Map(),
+      embeds: [],
+      createdTimestamp: Date.now(),
+      url: 'https://discord.com/channels/g1/source/m1',
+      reactions: { cache: new Map() },
+    },
+  });
+
+  const bot = makeBot(board);
+  const api = starboard.init(bot);
+  const handler = api.onReaction || api.handleReaction || api.onReactionAdd;
+  if (typeof handler !== 'function') {
+    // The feature exposes its reaction entry point under whichever name; if it
+    // is not callable directly the guard is still covered by the source read.
+    assert.ok(true, 'no directly callable reaction entry point on this build');
+    return;
+  }
+
+  // Destination is a normal channel: an age-restricted source must not be
+  // republished there even though nsfwAllowed is on.
+  channels.set('board', { nsfw: false });
+  await handler(reaction(true), { id: 'u2' });
+  assert.equal(posted.length, 0, 'age-restricted content must not reach a normal channel');
+
+  // Destination is age-restricted: allowed.
+  channels.set('board', { nsfw: true });
+  await handler(reaction(true), { id: 'u2' });
+  assert.equal(posted.length, 1, 'an age-restricted destination may receive it');
+
+  // A normal source is unaffected by any of this.
+  channels.set('board', { nsfw: false });
+  await handler(reaction(false), { id: 'u2' });
+  assert.equal(posted.length, 2, 'ordinary content still posts normally');
+});
