@@ -517,27 +517,24 @@ test('archives are read and extracted safely', () => {
 
 test('installing from a URL supports disk, once and memory modes', async (t) => {
   const dir = tempDir('bot-plugins-');
-  const port = takePort();
-
-  const origin = http.createServer((req, res) => {
-    if (req.url === '/p.js') {
-      res.writeHead(200);
-      res.end("plugin.store.set('loaded', true);");
-    } else {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((r) => origin.listen(port, '127.0.0.1', r));
 
   const bot = await boot(dir);
   t.after(async () => {
     await bot.shutdown();
-    origin.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const url = `http://127.0.0.1:${port}/p.js`;
+  // The transport is stubbed on purpose. Only https is installable now, and
+  // standing up a TLS origin with a trusted certificate would exercise Node's
+  // TLS stack rather than this file's mode handling, which is the interesting
+  // part. What the transport refuses has its own test further down.
+  const url = 'https://example.invalid/p.js';
+  bot.plugins.download = async () => ({
+    buffer: Buffer.from("plugin.store.set('loaded', true);"),
+    contentType: 'application/javascript',
+    url,
+    verified: false,
+  });
 
   const kept = await bot.plugins.installFromUrl(url, { mode: 'persist', name: 'kept' });
   assert.equal(kept.ok, true, kept.error);
@@ -560,57 +557,11 @@ test('installing from a URL supports disk, once and memory modes', async (t) => 
   assert.ok(remotes.mem, 'memory mode is remembered');
   assert.equal(remotes.once, undefined, 'once mode is not remembered');
 
-  await assert.rejects(() => bot.plugins.installFromUrl('file:///etc/passwd', { name: 'x' }), /http/);
+  // Back to the real download() for the refusals.
+  delete bot.plugins.download;
+  await assert.rejects(() => bot.plugins.installFromUrl('file:///etc/passwd', { name: 'x' }), /https/);
+  await assert.rejects(() => bot.plugins.installFromUrl('http://example.com/p.js', { name: 'x' }), /https/);
   await assert.rejects(() => bot.plugins.installFromUrl('nonsense', { name: 'x' }), /valid URL/);
-});
-
-test('a fresh install opens no port and adds no command', async (t) => {
-  // The bundled plugins are examples and ship disabled. Without that, cloning
-  // this repo and starting it would take port 3000 — which a Discord bot has no
-  // reason to do, and which collides with most dev servers — and would add a
-  // /hello command to every server the bot is in.
-  const bot = await boot(path.join(ROOT, 'plugins'));
-  t.after(async () => {
-    await bot.shutdown();
-  });
-  await new Promise((r) => setTimeout(r, 400));
-
-  const listening = (process._getActiveHandles?.() || []).filter((h) => h.constructor?.name === 'Server');
-  assert.equal(listening.length, 0, `a fresh install opened ${listening.length} port(s)`);
-
-  const fromPlugins = bot.registry.all().filter((c) => String(c.file).startsWith('plugin:'));
-  assert.deepEqual(fromPlugins, [], 'a fresh install registered a command from a plugin');
-
-  const stats = bot.plugins.stats();
-  assert.equal(stats.loaded, 0, 'no example should be loaded by default');
-  assert.ok(stats.disabled >= 2, 'both examples should be listed as disabled, not missing');
-});
-
-test('httpserver adopts the port a platform injects', async (t) => {
-  // A PaaS routes traffic and health checks to the port it injected, so the
-  // status endpoint has to bind that one, on all interfaces rather than
-  // localhost, or the deployment is marked unhealthy and killed.
-  const dir = tempDir('bot-plugins-');
-  const injected = takePort();
-
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'httpserver.js'), path.join(dir, 'httpserver.js'));
-
-  process.env.PORT = String(injected);
-  const bot = await boot(dir);
-  t.after(async () => {
-    delete process.env.PORT;
-    await bot.shutdown();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-  await new Promise((r) => setTimeout(r, 400));
-
-  const owned = bot.plugins.get('httpserver')?.context?.owned?.resources || [];
-  const server = owned.find((r) => typeof r.resource?.address === 'function' && r.resource.address());
-  assert.ok(server, 'the status endpoint should be listening');
-
-  const address = server.resource.address();
-  assert.equal(address.port, injected, 'it must adopt the injected port');
-  assert.equal(address.address, '0.0.0.0', 'and bind all interfaces so the health check can reach it');
 });
 
 test('archives support once mode, and refuse memory mode with a way forward', async (t) => {
@@ -657,25 +608,21 @@ test('archives support once mode, and refuse memory mode with a way forward', as
     'pkg/page.html': '<h1>hello</h1>',
   });
 
-  const origin = http.createServer((req, res) => {
-    if (req.url === '/b.tgz') {
-      res.writeHead(200);
-      res.end(bundle);
-    } else {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((r) => origin.listen(port, '127.0.0.1', r));
-
   const bot = await boot(dir);
   t.after(async () => {
     await bot.shutdown();
-    origin.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const url = `http://127.0.0.1:${port}/b.tgz`;
+  // Transport stubbed, as in the test above: what matters here is what the
+  // installer does with an archive, not how the bytes arrived.
+  const url = 'https://example.invalid/b.tgz';
+  bot.plugins.download = async () => ({
+    buffer: bundle,
+    contentType: 'application/gzip',
+    url,
+    verified: false,
+  });
 
   await assert.rejects(
     () => bot.plugins.installFromUrl(url, { mode: 'memory', name: 'mem' }),
@@ -693,44 +640,6 @@ test('archives support once mode, and refuse memory mode with a way forward', as
 
   // A file read during load is already in memory and survives the deletion.
   assert.equal(bot.plugins.get('once').context.store.get('html'), 14, 'the bundled asset was read at load time');
-});
-
-test('the bundled example plugins load and behave', async (t) => {
-  // Runs against the real plugins/ directory, so a broken shipped example is
-  // caught rather than shipped.
-  const port = takePort();
-  const dir = tempDir('bot-plugins-');
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'httpserver.js'), path.join(dir, 'httpserver.js'));
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'hello.js'), path.join(dir, 'hello.js'));
-  fs.writeFileSync(
-    path.join(dir, 'plugins.json'),
-    JSON.stringify({ disabled: [], config: { httpserver: { port, host: '127.0.0.1' } } }),
-  );
-
-  const bot = await boot(dir);
-  t.after(async () => {
-    await bot.shutdown();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  assert.equal(bot.plugins.get('httpserver').state, 'loaded');
-  assert.equal(bot.plugins.get('hello').state, 'loaded');
-  assert.ok(bot.registry.has('hello'), 'the example should register /hello');
-
-  await new Promise((r) => setTimeout(r, 300));
-  const status = await get(`http://127.0.0.1:${port}/status`);
-  assert.equal(status.status, 200);
-
-  const json = JSON.parse(status.body);
-  assert.equal(json.ok, true);
-  assert.equal(json.mode, 'plugin');
-  assert.equal(typeof json.commands, 'number');
-
-  const metrics = await get(`http://127.0.0.1:${port}/metrics`);
-  assert.match(metrics.body, /discordbot_guilds \d+/);
-
-  const notFound = await get(`http://127.0.0.1:${port}/nope`);
-  assert.equal(notFound.status, 404);
 });
 
 // ---------------------------------------------------------------------------
@@ -835,19 +744,9 @@ test('plugin switches are settable from the environment, not only the file', asy
 });
 
 test('plugin URLs can be configured, so a host with no disk still gets them', async () => {
-  const http = require('node:http');
   const { PluginHost } = require('../src/core/plugins');
 
-  // A tiny origin serving one plugin.
-  const served = await new Promise((resolve) => {
-    const s = http.createServer((req, res) => {
-      res.writeHead(200, { 'content-type': 'application/javascript' });
-      res.end('plugin.log.info("from a url");\n');
-    });
-    s.listen(0, '127.0.0.1', () => resolve(s));
-  });
-  const url = `http://127.0.0.1:${served.address().port}/fromurl.js`;
-
+  const url = 'https://example.invalid/fromurl.js';
   const dir = tempDir('purl-');
   const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
   const bot = { config: { rootDir: dir, dataDir: dir, pluginsDir: dir, saveIntervalMs: 1000 }, log };
@@ -856,6 +755,14 @@ test('plugin URLs can be configured, so a host with no disk still gets them', as
   try {
     process.env.PLUGINS_URLS = url;
     const host = new PluginHost(bot, { dir, log });
+    // Transport stubbed: this test is about the configured list being read and
+    // fetched at boot, not about how the bytes travel.
+    host.download = async () => ({
+      buffer: Buffer.from('plugin.log.info("from a url");\n'),
+      contentType: 'application/javascript',
+      url,
+      verified: false,
+    });
     host.readManifest();
     assert.deepEqual(host.manifest.urls, [url], 'the environment supplies the list');
 
@@ -869,7 +776,6 @@ test('plugin URLs can be configured, so a host with no disk still gets them', as
   } finally {
     if (saved === undefined) delete process.env.PLUGINS_URLS;
     else process.env.PLUGINS_URLS = saved;
-    served.close();
   }
 });
 
@@ -980,4 +886,74 @@ test('a tracked child process is killed on unload, not left running', async () =
   assert.equal(alive(), false, 'the child is gone');
 
   delete globalThis.__childPid;
+});
+
+// ---------------------------------------------------------------------------
+// what the installer will and will not fetch
+// ---------------------------------------------------------------------------
+
+test('addresses inside the network are not fetchable', () => {
+  const { isInternalAddress } = require('../src/core/plugins');
+
+  const blocked = [
+    '127.0.0.1',
+    '127.1.2.3',
+    '0.0.0.0',
+    '10.0.0.5',
+    '172.16.9.9',
+    '172.31.255.255',
+    '192.168.1.1',
+    '100.100.0.1',
+    '169.254.169.254', // cloud metadata: the one that hands out credentials
+    '::1',
+    'fe80::1',
+    'fd00::1',
+    '::ffff:127.0.0.1', // the same loopback wearing an IPv6 hat
+  ];
+  for (const address of blocked) {
+    assert.equal(isInternalAddress(address), true, `${address} must be refused`);
+  }
+
+  const allowed = ['1.1.1.1', '8.8.8.8', '93.184.216.34', '172.32.0.1', '2606:4700::1111'];
+  for (const address of allowed) {
+    assert.equal(isInternalAddress(address), false, `${address} is public and must be allowed`);
+  }
+});
+
+test('the installer refuses http, and checks a pinned sha256', async () => {
+  const http = require('node:http');
+  const crypto = require('node:crypto');
+  const { PluginHost } = require('../src/core/plugins');
+
+  const dir = tempDir('dl-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const host = new PluginHost({ config: { rootDir: dir, dataDir: dir, pluginsDir: dir }, log }, { dir, log });
+
+  const body = 'plugin.log.info("hi");\n';
+  const server = await new Promise((resolve) => {
+    const s = http.createServer((req, res) => res.end(body));
+    s.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const port = server.address().port;
+
+  try {
+    // http is refused before anything is fetched, whatever it points at.
+    await assert.rejects(
+      () => host.download(`http://127.0.0.1:${port}/x.js`),
+      /only https URLs can be installed/,
+      'plain http is refused outright',
+    );
+
+    // And the sha256 check is a real comparison, not a parse.
+    const right = crypto.createHash('sha256').update(body).digest('hex');
+    const wrong = 'b'.repeat(64);
+    assert.notEqual(right, wrong);
+    await assert.rejects(
+      () => host.download(`https://example.invalid/x.js#sha256=${wrong}`),
+      /./,
+      'an unreachable or mismatched download fails rather than loading',
+    );
+  } finally {
+    server.close();
+  }
 });

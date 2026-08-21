@@ -5,15 +5,10 @@ with `/plugin scan`.
 
 ```
 plugins/
-  httpserver.js     standalone script example — starts a status endpoint
-  hello.js          full-contract example — command, button, storage, task
-  plugins.json      optional: disable plugins, pass config
-
-Both examples are DISABLED by default, so a fresh install opens no port and
-adds no commands. Enable one with /plugin load, or remove its name from
-"disabled" in plugins.json. Your own plugins are unaffected — anything not
-named there loads normally.
+  plugins.json      optional: disable plugins, pass config, list URLs
 ```
+
+Nothing ships here. A fresh install opens no port and adds no commands.
 
 ---
 
@@ -35,7 +30,7 @@ setInterval(() => {
 console.log('ticker started');
 ```
 
-That is a complete, working plugin. `plugins/httpserver.js` is a real one.
+That is a complete, working plugin.
 
 ### 2. A module with `init()`
 
@@ -65,8 +60,6 @@ module.exports = {
   },
 };
 ```
-
-`plugins/hello.js` is a working version of this with everything wired up.
 
 The two styles mix: a script can call `plugin.registerCommand()` at top level
 without exporting anything.
@@ -167,6 +160,28 @@ Note for Docker: the image copies `plugins/` at build time. Mount it as a volume
 its own `node_modules` then needs those installed on the host, for the
 container's platform.
 
+## A plugin that binds the platform's PORT
+
+Some hosts classify a deployment as a *web* service and restart it when nothing
+listens on the port they inject. A Discord bot has no reason to serve anything,
+so nothing here does — paste this in when a host insists:
+
+```js
+// plugins/port.js
+const http = require('node:http');
+
+http
+  .createServer((req, res) => {
+    const ready = Boolean(plugin.bot.readyAt);
+    res.writeHead(ready ? 200 : 503, { 'content-type': 'text/plain' });
+    res.end(ready ? 'ok' : 'starting');
+  })
+  .listen(Number(process.env.PORT) || 3000, '0.0.0.0');
+```
+
+503 until the gateway connects is what a health check should see during startup.
+The server is tracked automatically, so unloading the plugin frees the port.
+
 ## Installing from a URL or an archive
 
 Three persistence modes, because "try this plugin" and "install this plugin" are
@@ -180,6 +195,22 @@ different things:
 
 ```js
 await bot.plugins.installFromUrl('https://example.com/p.js', { mode: 'memory' });
+```
+
+**https only.** Over plain http anyone on the network path chooses what code
+this process runs, and with `PLUGINS_URLS` that happens again at every restart.
+There is no case where http is the right answer, so it is refused outright.
+
+**Only public addresses.** The resolved IP is checked before each request, and
+again for every redirect: loopback, private ranges and link-local are refused.
+That last one matters most — `169.254.169.254` is where a cloud host serves
+instance credentials to anything that asks.
+
+**Pin the content if you like.** A `#sha256=` fragment is verified against what
+arrived, so a changed file fails to load instead of running:
+
+```
+PLUGINS_URLS=https://example.com/p.js#sha256=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 ```
 
 `memory` mode records only the URL, in `data/plugins/_remote.json`, and fetches
@@ -264,7 +295,7 @@ that. Use `plugin.log` unless you specifically want a separate file.
 ## The `plugin` context
 
 ```js
-plugin.name                       // "httpserver"
+plugin.name                       // "port"
 plugin.file, plugin.dir           // absolute paths
 plugin.bot                        // the Bot instance: db, features, scheduler, client
 plugin.log                        // scoped logger: .info .warn .error .debug
@@ -324,9 +355,9 @@ Entirely optional.
 
 ```json
 {
-  "disabled": ["httpserver"],
+  "disabled": ["noisy"],
   "config": {
-    "httpserver": { "port": 8080, "host": "0.0.0.0" }
+    "port": { "bind": "0.0.0.0" }
   }
 }
 ```
@@ -473,58 +504,3 @@ the plugin name comes from the filename in the URL.
 The fetched code runs inside the bot process with the bot's privileges. Only
 list URLs you control: whoever can change what that URL serves can run anything
 they like here, and a restart is all it takes.
-
-## webpanel.js
-
-A browser UI for managing plugins: upload, install from npm or a URL, load,
-unload, view logs. Ships enabled, but **refuses to start until a credential is
-set** — so it does nothing on a fresh clone.
-
-Generate a verifier, which keeps the secret off the host entirely:
-
-```bash
-node plugins/webpanel.js --hash
-```
-
-Put the printed `scrypt$...` string in `WEBPANEL_TOKEN_HASH`, or in
-`plugins.json` as `config.webpanel.tokenHash`. A plaintext `WEBPANEL_TOKEN` of at
-least 24 characters also works and warns.
-
-### Where it listens
-
-| | Port | Interface |
-|---|---|---|
-| Platform injected `PORT` | that port | `0.0.0.0` |
-| Otherwise | `WEBPANEL_PORT`, else 8787 | `127.0.0.1` |
-
-`config.port` and `config.host` in `plugins.json` override both.
-
-Following `PORT` is what makes this usable on a PaaS: a host that injects it
-will not keep a service alive without a listener on it, and a panel bound to
-localhost there is both unreachable and useless for that.
-
-**Understand what that means.** On a PaaS the panel is on the service's public
-URL, and it runs uploaded code inside the bot process — the credential is
-equivalent to a shell on that host. Failed attempts are rate-limited and lock
-out for 15 minutes, the secret is exchanged for a session token at login, and
-only a scrypt verifier is stored. A long random secret is still doing most of
-the work.
-
-Two ways to reduce the exposure:
-
-- `config.webpanel.allow` in `plugins.json` takes a list of addresses; anything
-  else is refused before authentication is attempted.
-- On a host you can reach by SSH, leave it on localhost and forward the port
-  instead of publishing it:
-
-  ```bash
-  ssh -L 8787:127.0.0.1:8787 you@your-server
-  ```
-
-Prefer `WEBPANEL_TOKEN_HASH` over `WEBPANEL_TOKEN`: the former stores a verifier,
-so a copy of the environment — a platform variables page, `docker inspect`, a
-config backup, a screenshot — does not yield a usable credential.
-
-If all you need is for the platform to see a listening port, `httpserver.js` is
-the smaller target: same `PORT` rule, but it only reports status and has no way
-to change anything.

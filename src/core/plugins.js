@@ -53,6 +53,70 @@ const { JsonStore } = require('./store');
  * you have read or trust.
  */
 
+/**
+ * Rejects an address the installer must never fetch from.
+ *
+ * The danger is not the hostname but what it resolves to. On a cloud host
+ * 169.254.169.254 serves instance credentials to anything that asks, and
+ * 127.0.0.1 reaches whatever else this container is running - neither needs a
+ * suspicious-looking URL to reach, only a DNS record pointing there. So the
+ * check is on the resolved address, and it runs again for every redirect hop.
+ */
+async function assertPublicAddress(url) {
+  const dns = require('node:dns').promises;
+  const net = require('node:net');
+
+  let addresses;
+  const literal = net.isIP(url.hostname.replace(/^\[|\]$/g, ''));
+  if (literal) {
+    addresses = [{ address: url.hostname.replace(/^\[|\]$/g, ''), family: literal }];
+  } else {
+    try {
+      addresses = await dns.lookup(url.hostname, { all: true });
+    } catch {
+      throw new Error(`${url.hostname} does not resolve`);
+    }
+  }
+
+  for (const { address } of addresses) {
+    if (isInternalAddress(address)) {
+      throw new Error(
+        `${url.hostname} resolves to ${address}, which is inside this network. ` +
+          'Plugins are only installed from public addresses.',
+      );
+    }
+  }
+}
+
+/** True for loopback, link-local, private and other non-public ranges. */
+function isInternalAddress(address) {
+  const net = require('node:net');
+
+  if (net.isIPv4(address)) {
+    const [a, b] = address.split('.').map(Number);
+    if (a === 0 || a === 10 || a === 127) return true; // this host, private, loopback
+    if (a === 169 && b === 254) return true; // link-local, including cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 192 && b === 168) return true; // private
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    if (a >= 224) return true; // multicast and reserved
+    return false;
+  }
+
+  if (net.isIPv6(address)) {
+    const lower = address.toLowerCase();
+    if (lower === '::1' || lower === '::') return true;
+    if (lower.startsWith('fe80')) return true; // link-local
+    if (/^f[cd]/.test(lower)) return true; // unique local
+    // An IPv4 address wearing an IPv6 hat still has to pass the IPv4 rules.
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
+    if (mapped) return isInternalAddress(mapped[1]);
+    return false;
+  }
+
+  return true; // unparseable, so not demonstrably public
+}
+
 /** Extensions treated as native addons. */
 const NATIVE_EXTENSIONS = new Set(['.node', '.so', '.dll', '.dylib']);
 
@@ -1332,18 +1396,43 @@ class PluginHost {
     } catch {
       throw new Error('that is not a valid URL');
     }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error('only http and https URLs can be installed');
+    // https only. Plain http means anyone on the path decides what code this
+    // process runs, and PLUGINS_URLS re-fetches on every boot - so a single
+    // hostile network is permanent control of the host. There is no use for
+    // which http is the right answer here.
+    if (parsed.protocol !== 'https:') {
+      throw new Error(
+        parsed.protocol === 'http:'
+          ? 'only https URLs can be installed: over http anyone on the network can replace the code that runs here'
+          : 'only https URLs can be installed',
+      );
     }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(parsed.href, {
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: { 'user-agent': 'mulebot-plugin-installer' },
-      });
+      // Redirects are followed by hand. `redirect: 'follow'` would check the
+      // first URL and then obey wherever it is sent, which makes the address
+      // check below decorative: a public URL can redirect to 169.254.169.254
+      // and hand back the cloud provider's credentials.
+      let current = parsed;
+      let response;
+      for (let hop = 0; hop < 5; hop++) {
+        await assertPublicAddress(current);
+        response = await fetch(current.href, {
+          signal: controller.signal,
+          redirect: 'manual',
+          headers: { 'user-agent': 'mulebot-plugin-installer' },
+        });
+
+        if (![301, 302, 303, 307, 308].includes(response.status)) break;
+        const location = response.headers.get('location');
+        if (!location) throw new Error(`the server sent a ${response.status} with no location`);
+        current = new URL(location, current);
+        if (current.protocol !== 'https:') throw new Error('the redirect left https, which is not followed');
+        if (hop === 4) throw new Error('too many redirects');
+      }
+
       if (!response.ok) throw new Error(`the server answered ${response.status} ${response.statusText}`);
 
       const declared = Number(response.headers.get('content-length') || 0);
@@ -1364,10 +1453,27 @@ class PluginHost {
         chunks.push(chunk);
       }
 
+      const buffer = Buffer.concat(chunks);
+
+      // An optional #sha256=... on the URL pins the content. Without it, a
+      // URL fetched at every boot is only as trustworthy as whoever can change
+      // what it serves - and the honest answer to "only use a URL you control"
+      // is a way to say what you expected to find there.
+      // parsed.hash is "#sha256=..." or empty, so slice(1) yields "" when absent.
+      const pinned = /^sha256=([0-9a-f]{64})$/i.exec(parsed.hash.slice(1));
+      if (pinned) {
+        const expected = pinned[1].toLowerCase();
+        const actual = require('node:crypto').createHash('sha256').update(buffer).digest('hex');
+        if (actual !== expected) {
+          throw new Error(`the file does not match the sha256 in the URL.\n  expected ${expected}\n  received ${actual}`);
+        }
+      }
+
       return {
-        buffer: Buffer.concat(chunks),
+        buffer,
         contentType: response.headers.get('content-type') || '',
         url: response.url || parsed.href,
+        verified: Boolean(pinned),
       };
     } catch (e) {
       if (e.name === 'AbortError') throw new Error(`the download timed out after ${timeoutMs / 1000}s`);
@@ -1864,4 +1970,4 @@ class PluginHost {
   }
 }
 
-module.exports = { PluginHost, PluginContext, Plugin, NATIVE_EXTENSIONS };
+module.exports = { PluginHost, PluginContext, Plugin, NATIVE_EXTENSIONS, isInternalAddress };

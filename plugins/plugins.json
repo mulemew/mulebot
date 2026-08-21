@@ -2,32 +2,17 @@
   "_comment": [
     "Optional. Delete this file and everything still works with defaults.",
     "'disabled' lists plugin names (the filename without .js) to skip at boot.",
-    "'config' is handed to each plugin as plugin.config."
-  ],
-  "_why_disabled": [
-    "The bundled example plugins ship switched off.",
-    "httpserver would otherwise open port 3000 on a fresh install — a Discord",
-    "bot has no business taking a port nobody asked for, and 3000 collides with",
-    "half the dev tools in existence. hello would otherwise add a /hello command",
-    "to every server the bot is in.",
+    "'config' is handed to each plugin as plugin.config.",
+    "'urls' lists https URLs fetched into memory at every boot.",
     "",
-    "webpanel is NOT disabled here, but it refuses to start without a credential,",
-    "so dropping it in does nothing until WEBPANEL_TOKEN_HASH or WEBPANEL_TOKEN",
-    "is set. It uploads and runs code inside the bot process; on a host that",
-    "injects PORT it binds 0.0.0.0 and that credential is all that guards it.",
-    "",
-    "Turn one on by deleting its name below and restarting, or with:",
-    "  /plugin load name:httpserver",
-    "Your own plugins are NOT affected — anything not listed here loads normally."
+    "The same three are settable from the environment, which is the only way",
+    "on a host where this file cannot be edited:",
+    "  PLUGINS_DISABLED=a,b     PLUGINS_ALLOW=c     PLUGINS_URLS=https://..."
   ],
-  "disabled": [
-    "httpserver",
-    "hello"
-  ],
-  "config": {
-    "httpserver": {
-      "port": 3000,
-      "host": "127.0.0.1"
-    }
-  }
+
+  "disabled": [],
+
+  "config": {},
+
+  "urls": []
 }

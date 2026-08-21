@@ -434,21 +434,22 @@ test('a read-only plugins directory falls back, and says so', async () => {
   const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
   await bot.init();
 
-  const port = 34_100 + (process.pid % 300);
-  const origin = http.createServer((q, s) => {
-    s.writeHead(200);
-    s.end("plugin.store.set('ok', 1);");
+  // Transport stubbed: only https is installable, and what is under test here
+  // is where the install lands when the plugins directory cannot be written.
+  bot.plugins.download = async () => ({
+    buffer: Buffer.from("plugin.store.set('ok', 1);"),
+    contentType: 'application/javascript',
+    url: 'https://example.invalid/p.js',
+    verified: false,
   });
-  await new Promise((r) => origin.listen(port, '127.0.0.1', r));
 
-  const result = await bot.plugins.installFromUrl(`http://127.0.0.1:${port}/p.js`, { name: 'ro' });
+  const result = await bot.plugins.installFromUrl('https://example.invalid/p.js', { name: 'ro' });
 
   assert.equal(result.ok, true, result.error);
   assert.equal(result.temporary, true, 'the caller must be told the install is temporary');
   assert.equal(bot.plugins.get('ro').state, 'loaded', 'and it must actually run');
   assert.equal(fs.existsSync(path.join(blocked, 'ro.js')), false, 'nothing was written to the read-only path');
 
-  origin.close();
   await bot.shutdown();
   fs.rmSync(base, { recursive: true, force: true });
 });

@@ -38,17 +38,14 @@ VOLUME ["/app/data"]
 
 # No HEALTHCHECK, deliberately.
 #
-# The previous one probed a hardcoded port 3000 for the httpserver plugin. That
-# plugin ships disabled, so nothing ever answered: the container was unhealthy
-# from its first check onwards, and a platform that restarts unhealthy
-# containers restarted it forever, with nothing in the bot's log to explain why.
-# A check that cannot pass is worse than no check.
+# An earlier one probed a hardcoded port 3000, which nothing ever listened on:
+# the container was unhealthy from its first check onwards, and a platform that
+# restarts unhealthy containers restarted it forever, with nothing in the log to
+# explain why. A check that cannot pass is worse than no check.
 #
 # A Discord bot needs no inbound port at all. If the platform requires one,
-# enable a plugin that provides it - both follow the injected PORT:
-#
-#   httpserver   status endpoint, read only
-#   webpanel     management UI, requires a credential
+# add a plugin that binds the injected PORT - plugins/README.md has a six-line
+# one to paste.
 #
 # A platform-level TCP check against PORT then passes. To also have a
 # container-level check, uncomment this - it follows PORT rather than assuming:
