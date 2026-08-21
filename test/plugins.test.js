@@ -1103,3 +1103,92 @@ test('an archive with a bundled dependency and a native addon loads as one plugi
   assert.ok(!bot.plugins.get('helper'), 'the helper is not a separate plugin');
   assert.equal([...bot.plugins.plugins.keys()].length, 1);
 });
+
+test('PLUGINS_URLS takes archives as well as scripts, and leaves nothing behind', async (t) => {
+  const zlib = require('node:zlib');
+  const dir = tempDir('purl2-');
+
+  const tar = (files) => {
+    const blocks = [];
+    for (const [name, content] of Object.entries(files)) {
+      const data = Buffer.from(content, 'utf8');
+      const h = Buffer.alloc(512);
+      h.write(name, 0, 100, 'utf8');
+      h.write('0000644\0', 100, 8, 'ascii');
+      h.write('0000000\0', 108, 8, 'ascii');
+      h.write('0000000\0', 116, 8, 'ascii');
+      h.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+      h.write('00000000000\0', 136, 12, 'ascii');
+      h.write('        ', 148, 8, 'ascii');
+      h.write('0', 156, 1, 'ascii');
+      h.write('ustar\0' + '00', 257, 8, 'ascii');
+      let sum = 0;
+      for (const b of h) sum += b;
+      h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+      blocks.push(h, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+    }
+    blocks.push(Buffer.alloc(1024));
+    return zlib.gzipSync(Buffer.concat(blocks));
+  };
+
+  const bundle = tar({
+    'tools/package.json': JSON.stringify({ name: 'tools', version: '2.0.0', main: 'index.js' }),
+    'tools/index.js': [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "plugin.store.set('helper', require('./lib/helper')());",
+      "plugin.store.set('asset', fs.readFileSync(path.join(__dirname, 'data.txt'), 'utf8').trim());",
+    ].join('\n'),
+    'tools/lib/helper.js': "module.exports = () => 'relative require works';",
+    'tools/data.txt': 'a file read by path',
+  });
+
+  const SCRIPT = 'https://example.invalid/single.js';
+  const BUNDLE = 'https://example.invalid/tools.tar.gz';
+
+  const saved = process.env.PLUGINS_URLS;
+  process.env.PLUGINS_URLS = `${SCRIPT},${BUNDLE}`;
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (saved === undefined) delete process.env.PLUGINS_URLS;
+    else process.env.PLUGINS_URLS = saved;
+  });
+
+  bot.plugins.download = async (url) => ({
+    buffer: url.startsWith(BUNDLE) ? bundle : Buffer.from("plugin.store.set('kind', 'script');"),
+    contentType: 'application/octet-stream',
+    url,
+    verified: false,
+  });
+
+  bot.plugins.readManifest();
+  const result = await bot.plugins.restoreRemotes();
+  assert.equal(result.failed, 0);
+  assert.equal(result.restored, 2, 'both shapes load');
+
+  // A script runs from the string; an archive needs a directory, so it is
+  // extracted, loaded and removed. The caller writing the URL into an
+  // environment variable does not have to know which it is.
+  const script = bot.plugins.get('single');
+  assert.equal(script.state, 'loaded');
+  assert.equal(script.context.store.get('kind'), 'script');
+
+  const archive = bot.plugins.get('tools');
+  assert.equal(archive.state, 'loaded');
+  assert.equal(archive.version, '2.0.0', 'metadata comes from the bundled package.json');
+  assert.equal(archive.context.store.get('helper'), 'relative require works');
+  assert.equal(archive.context.store.get('asset'), 'a file read by path', 'a data file was read at load time');
+
+  // Both are ephemeral: nothing survives a restart, which is what makes
+  // re-fetching on every boot the correct behaviour rather than a waste.
+  assert.equal(script.ephemeral, true);
+  assert.equal(archive.ephemeral, true);
+  assert.deepEqual(fs.readdirSync(dir), [], 'the plugins directory is untouched');
+
+  const scratch = bot.plugins.writableDir().dir;
+  const leftover = fs.existsSync(scratch) ? fs.readdirSync(scratch) : [];
+  assert.deepEqual(leftover, [], 'the extracted directory is removed after loading');
+});

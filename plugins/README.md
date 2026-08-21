@@ -535,9 +535,21 @@ or in `plugins/plugins.json`:
 { "urls": ["https://example.com/myplugin.js"] }
 ```
 
-Each is fetched at boot, loaded into memory, and never written to disk — so the
-next restart fetches it again. Plain `.js`, `.zip` and `.tar.gz` all work, and
-the plugin name comes from the filename in the URL.
+Each is fetched at boot and leaves nothing behind, so the next restart fetches
+it again. What that means depends on what the URL serves:
+
+| | |
+|---|---|
+| `.js` | compiled from the download; the disk is never touched |
+| `.zip`, `.tar.gz` | extracted, loaded, then the directory is removed |
+
+A bundle cannot run purely from memory — its relative `require()`s and its data
+files need a real directory — so it is extracted to the first writable path,
+usually `/tmp`, for as long as it takes to load. Note the peak: an archive that
+expands to tens of MB costs that much memory on a host where `/tmp` is a tmpfs.
+
+The plugin name comes from the filename in the URL, with both extensions
+removed: `tools.tar.gz` becomes `tools`.
 
 The fetched code runs inside the bot process with the bot's privileges. Only
 list URLs you control: whoever can change what that URL serves can run anything

@@ -1499,13 +1499,17 @@ class PluginHost {
    * Installs a plugin from a URL.
    *
    * @param {string} url
-   * @param {{ name?: string, mode?: 'persist'|'memory'|'once', remember?: boolean }} opts
-   *   persist  write it into the plugins directory and load it (survives restart on disk)
-   *   memory   never touch the disk; recorded so it is fetched again on restart
-   *   once     download, load, and delete the file immediately - gone on restart
+   * @param {{ name?: string, mode?: 'persist'|'memory'|'once'|'ephemeral', remember?: boolean }} opts
+   *   persist    write it into the plugins directory and load it (survives restart on disk)
+   *   memory     never touch the disk; recorded so it is fetched again on restart
+   *   once       download, load, and delete immediately - gone on restart
+   *   ephemeral  whichever of the two leaves nothing behind, decided from the
+   *              bytes: memory for a script, once for an archive. This is what
+   *              PLUGINS_URLS uses, because the person writing a URL into an
+   *              environment variable should not have to know which it serves.
    */
   async installFromUrl(url, opts = {}) {
-    const mode = opts.mode || 'persist';
+    let mode = opts.mode || 'persist';
     const name = (opts.name || PluginHost.nameFromUrl(url)).replace(/[^A-Za-z0-9._-]/g, '-');
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error('invalid plugin name derived from that URL');
 
@@ -1520,6 +1524,13 @@ class PluginHost {
         return false;
       }
     })();
+
+    // "ephemeral" means "leave nothing behind", not "never touch the disk", and
+    // which of those is achievable depends on what arrived. A script really can
+    // run from a string; a bundle needs a directory for its relative require()s
+    // and its data files. So the choice is made here, once the bytes are in
+    // hand, rather than forcing the caller to know in advance what a URL serves.
+    if (mode === 'ephemeral') mode = looksArchive ? 'once' : 'memory';
 
     // ---- archive ----
     if (looksArchive) {
@@ -1661,7 +1672,10 @@ class PluginHost {
 
     const fetchOne = async (url, name, label) => {
       try {
-        const result = await this.installFromUrl(url, { name, mode: 'memory', remember: false });
+        // ephemeral, not memory: a .js runs from the string, an archive is
+        // extracted, loaded and its directory removed. Either way nothing
+        // survives the restart, which is what makes re-fetching correct.
+        const result = await this.installFromUrl(url, { name, mode: 'ephemeral', remember: false });
         if (result.ok) {
           restored++;
           return;
