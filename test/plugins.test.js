@@ -1029,3 +1029,77 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
   await bot.plugins.unload('healthz');
   assert.equal(await portFree(port), true, 'unloading frees the port');
 });
+
+test('an archive with a bundled dependency and a native addon loads as one plugin', async (t) => {
+  const zlib = require('node:zlib');
+  const dir = tempDir('bundle-');
+
+  const tar = (files) => {
+    const blocks = [];
+    for (const [name, content] of Object.entries(files)) {
+      const data = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+      const h = Buffer.alloc(512);
+      h.write(name, 0, 100, 'utf8');
+      h.write('0000644\0', 100, 8, 'ascii');
+      h.write('0000000\0', 108, 8, 'ascii');
+      h.write('0000000\0', 116, 8, 'ascii');
+      h.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+      h.write('00000000000\0', 136, 12, 'ascii');
+      h.write('        ', 148, 8, 'ascii');
+      h.write('0', 156, 1, 'ascii');
+      h.write('ustar\0' + '00', 257, 8, 'ascii');
+      let sum = 0;
+      for (const b of h) sum += b;
+      h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+      blocks.push(h, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+    }
+    blocks.push(Buffer.alloc(1024));
+    return zlib.gzipSync(Buffer.concat(blocks));
+  };
+
+  // A stand-in for a compiled addon. It is never dlopen'd here - what matters
+  // is that it travels with the plugin and is not mistaken for one.
+  const bundle = tar({
+    'mypkg/package.json': JSON.stringify({ name: 'mypkg', version: '1.0.0', main: 'index.js' }),
+    'mypkg/index.js': [
+      "const fs = require('node:fs');",
+      "const helper = require('./lib/helper');",
+      'plugin.store.set("helper", helper.greet());',
+      'plugin.store.set("dir", fs.readdirSync(__dirname).sort().join(","));',
+    ].join('\n'),
+    'mypkg/lib/helper.js': 'module.exports = { greet: () => "helper works" };',
+    'mypkg/native.node': Buffer.from('not a real addon, just cargo'),
+  });
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const result = await bot.plugins.installFromBuffer(bundle, { filename: 'mypkg.tar.gz' });
+
+  // ".tar.gz" is two extensions. Stripping one left plugins called "mypkg.tar",
+  // and only when uploaded - the URL path stripped both, so the same bundle got
+  // a different name depending on how it arrived.
+  assert.equal(result.name, 'mypkg', 'both extensions come off the name');
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.stripped, 'mypkg', 'the wrapper directory is stripped');
+
+  const plugin = bot.plugins.get('mypkg');
+  assert.equal(plugin.state, 'loaded');
+  assert.equal(plugin.version, '1.0.0', 'metadata comes from the bundled package.json');
+  assert.equal(plugin.context.store.get('helper'), 'helper works', 'a relative require inside the bundle resolves');
+  assert.equal(
+    plugin.context.store.get('dir'),
+    'index.js,lib,native.node,package.json',
+    'every file travelled, including the addon',
+  );
+
+  // The directory is one plugin: its helper and its .node must not be loaded
+  // as plugins of their own.
+  // get() returns null for an unknown name, not undefined.
+  assert.ok(!bot.plugins.get('native'), 'the addon is not a separate plugin');
+  assert.ok(!bot.plugins.get('helper'), 'the helper is not a separate plugin');
+  assert.equal([...bot.plugins.plugins.keys()].length, 1);
+});

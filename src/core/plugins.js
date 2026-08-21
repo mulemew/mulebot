@@ -1708,10 +1708,13 @@ class PluginHost {
    */
   async installFromBuffer(buffer, { name, filename, mode = 'persist' } = {}) {
     const archive = require('./archive');
-    const derived = (name || String(filename || 'uploaded').replace(/\.(js|cjs|zip|tar|tgz|gz)$/i, '')).replace(
-      /[^A-Za-z0-9._-]/g,
-      '-',
-    );
+    // Two passes, because ".tar.gz" is two extensions: one pass leaves a plugin
+    // called "mypkg.tar". nameFromUrl already did this; uploads did not, so the
+    // same bundle got a different name depending on how it arrived.
+    const stem = String(filename || 'uploaded')
+      .replace(/\.(js|cjs|zip|tar|tgz|gz)$/i, '')
+      .replace(/\.tar$/i, '');
+    const derived = (name || stem).replace(/[^A-Za-z0-9._-]/g, '-');
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(derived)) throw new Error('invalid plugin name');
 
     if (this.plugins.get(derived)?.state === 'loaded') await this.unload(derived);
