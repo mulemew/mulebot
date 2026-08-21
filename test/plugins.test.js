@@ -957,3 +957,75 @@ test('the installer refuses http, and checks a pinned sha256', async () => {
     server.close();
   }
 });
+
+test('healthz reports what the bot is actually doing, not that it is alive', async (t) => {
+  const dir = tempDir('hz-');
+  const port = takePort();
+
+  fs.copyFileSync(path.join(ROOT, 'plugins', 'healthz.js'), path.join(dir, 'healthz.js'));
+
+  const saved = { allow: process.env.PLUGINS_ALLOW, port: process.env.PORT, grace: process.env.HEALTHZ_GATEWAY_GRACE_MS };
+  process.env.PLUGINS_ALLOW = 'healthz';
+  process.env.PORT = String(port);
+  process.env.HEALTHZ_GATEWAY_GRACE_MS = '50'; // so the grace can be waited out
+
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+    for (const [k, v] of [['PLUGINS_ALLOW', saved.allow], ['PORT', saved.port], ['HEALTHZ_GATEWAY_GRACE_MS', saved.grace]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  assert.equal(bot.plugins.get('healthz').state, 'loaded', 'PLUGINS_ALLOW overrode the shipped disable');
+  await new Promise((r) => setTimeout(r, 250));
+
+  const check = async () => {
+    const res = await get(`http://127.0.0.1:${port}/healthz`);
+    return { status: res.status, json: JSON.parse(res.body) };
+  };
+
+  // Never connected is "starting", not "broken" - a platform that waits should
+  // wait, and one that restarts on failure should not restart a booting bot.
+  let r = await check();
+  assert.equal(r.status, 503);
+  assert.equal(r.json.status, 'starting');
+
+  bot.readyAt = Date.now();
+  bot.client.ws.status = 0;
+  r = await check();
+  assert.equal(r.status, 200, 'connected gateway is healthy');
+  assert.equal(r.json.status, 'ok');
+
+  // A drop rides out the grace period, so a Discord hiccup is not a restart.
+  bot.client.ws.status = 5;
+  r = await check();
+  assert.equal(r.status, 200, 'a fresh disconnect is still healthy');
+
+  await new Promise((res) => setTimeout(res, 120));
+  r = await check();
+  assert.equal(r.status, 503, 'past the grace period it is not');
+  assert.match(r.json.checks.gateway.detail, /disconnected for/);
+
+  // A stalled event loop fails even with the gateway up: the bot is connected
+  // and still missing every interaction, which is the case a liveness check
+  // built on "the port answers" cannot see.
+  bot.client.ws.status = 0;
+  bot.lagPeak = 9000;
+  r = await check();
+  assert.equal(r.status, 503);
+  assert.equal(r.json.status, 'degraded');
+
+  // Nothing identifying on what is often a public URL.
+  const body = JSON.stringify(r.json);
+  for (const leak of ['guild', 'token', 'user', 'name', 'id']) {
+    assert.equal(body.toLowerCase().includes(`"${leak}`), false, `the body must not carry ${leak}`);
+  }
+
+  assert.equal((await get(`http://127.0.0.1:${port}/nope`)).status, 404);
+
+  await bot.plugins.unload('healthz');
+  assert.equal(await portFree(port), true, 'unloading frees the port');
+});

@@ -10,7 +10,16 @@
     "  PLUGINS_DISABLED=a,b     PLUGINS_ALLOW=c     PLUGINS_URLS=https://..."
   ],
 
-  "disabled": [],
+  "_why_healthz_is_disabled": [
+    "healthz opens a port, and a Discord bot has no reason to serve one. It",
+    "exists for platforms that classify the deployment as a web service and",
+    "restart it when nothing listens on the port they inject.",
+    "",
+    "Turn it on there with PLUGINS_ALLOW=healthz, or by emptying the list",
+    "below. Your own plugins are unaffected - anything not named here loads."
+  ],
+
+  "disabled": ["healthz"],
 
   "config": {},
 

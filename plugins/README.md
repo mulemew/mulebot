@@ -5,10 +5,12 @@ with `/plugin scan`.
 
 ```
 plugins/
+  healthz.js        health endpoint for platforms that require one — DISABLED
   plugins.json      optional: disable plugins, pass config, list URLs
 ```
 
-Nothing ships here. A fresh install opens no port and adds no commands.
+A fresh install opens no port and adds no commands: the one bundled plugin
+ships disabled. Anything you drop in yourself loads normally.
 
 ---
 
@@ -160,27 +162,63 @@ Note for Docker: the image copies `plugins/` at build time. Mount it as a volume
 its own `node_modules` then needs those installed on the host, for the
 container's platform.
 
-## A plugin that binds the platform's PORT
+## healthz — for platforms that require a listening port
 
 Some hosts classify a deployment as a *web* service and restart it when nothing
-listens on the port they inject. A Discord bot has no reason to serve anything,
-so nothing here does — paste this in when a host insists:
+listens on the port they inject. `healthz.js` is bundled for that, and **ships
+disabled** because a Discord bot has no reason to serve a port. Turn it on where
+you need it:
 
-```js
-// plugins/port.js
-const http = require('node:http');
-
-http
-  .createServer((req, res) => {
-    const ready = Boolean(plugin.bot.readyAt);
-    res.writeHead(ready ? 200 : 503, { 'content-type': 'text/plain' });
-    res.end(ready ? 'ok' : 'starting');
-  })
-  .listen(Number(process.env.PORT) || 3000, '0.0.0.0');
+```ini
+PLUGINS_ALLOW=healthz
 ```
 
-503 until the gateway connects is what a health check should see during startup.
-The server is tracked automatically, so unloading the plugin frees the port.
+It binds `0.0.0.0:$PORT` when the platform injects one, localhost otherwise, and
+answers on `/healthz`, `/health` and `/`.
+
+### What it checks
+
+"The process is alive" is what a TCP connection already proves, and it is nearly
+worthless — a bot whose gateway died an hour ago still accepts connections. So
+the status code reflects whether the bot is doing its job:
+
+| | |
+|---|---|
+| **200** | gateway connected, event loop responsive |
+| **503** | still starting, gateway down past the grace period, or the event loop stalling past the interaction deadline |
+
+```json
+{
+  "status": "degraded",
+  "uptimeMs": 41221,
+  "gatewayPingMs": 138,
+  "rssMb": 119,
+  "checks": {
+    "started":   { "ok": true,  "detail": "gateway has connected" },
+    "gateway":   { "ok": true,  "detail": "connected" },
+    "eventLoop": { "ok": false, "detail": "worst stall 9000ms of 3000ms allowed" }
+  }
+}
+```
+
+503 while starting is deliberate: a platform that waits for healthy should wait,
+and one that restarts on repeated failure should not restart a bot three seconds
+from ready. A gateway drop is tolerated for `HEALTHZ_GATEWAY_GRACE_MS`
+(default 120s) so a Discord hiccup does not become a restart loop.
+
+| Setting | Default |
+|---|---|
+| `PORT` | 3000, and binding `0.0.0.0` when set |
+| `HEALTHZ_PORT`, `HEALTHZ_HOST` | override either |
+| `HEALTHZ_GATEWAY_GRACE_MS` | `120000` |
+| `HEALTHZ_MAX_LAG_MS` | `3000`, Discord's interaction deadline |
+
+The body carries no server names, ids or member counts: on a PaaS this is a
+public URL with nothing in front of it.
+
+**If the platform's check is `type: tcp`** it opens a socket and closes it
+without reading the status, so none of the above is consulted and any listener
+would do. Point an HTTP check at `/healthz` to get the real answer.
 
 ## Installing from a URL or an archive
 

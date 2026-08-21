@@ -342,7 +342,8 @@ docker compose up -d
 
 `docker-compose.yml` sets `mem_limit: 256m` and nothing else. The bot reads the
 cgroup limit and selects its `low` cache profile on its own. Container logs are
-capped at 3 × 5 MB. There is no healthcheck: a Discord bot serves no port.
+capped at 3 × 5 MB. There is no healthcheck: a Discord bot serves no port
+unless you enable the bundled `healthz` plugin.
 
 ### systemd
 
@@ -382,9 +383,9 @@ get right:
 
 Only if you deliberately pick a **web** service type does the platform health-check
 an HTTP port and mark the deployment unhealthy when nothing answers. In that case
-add a plugin that binds the injected `PORT`. No such plugin ships with the bot;
-plugins/README.md has a six-line one to paste, which answers 200 once the
-gateway is up and 503 before that.
+set `PLUGINS_ALLOW=healthz`. The bundled `healthz` plugin ships disabled; it
+binds the injected `PORT` and answers 503 until the gateway is connected, then
+200 for as long as the bot is actually working. See plugins/README.md.
 
 Two things that do matter on every platform:
 
