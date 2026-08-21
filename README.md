@@ -505,6 +505,31 @@ Common causes, in the order worth checking:
 `/owner stats` reports the worst stall since boot. Anything approaching 3000 ms
 there means commands will fail intermittently no matter what they do.
 
+### Reading the memory numbers
+
+Three different figures, and only one of them gets a deployment stopped:
+
+| | What it counts |
+|---|---|
+| `rss` | this process only |
+| **container** | **everything charged to the cgroup: every process, tmpfs files, page cache** |
+| `heap` | the JavaScript heap inside `rss` |
+
+The gap matters on a small host. `npm start` leaves an 84 MB npm process
+resident; `/tmp` is often a tmpfs, so a file written there is memory; both are
+invisible to `rss`. A bot reporting 119 MB can sit in a container the kernel
+considers 250 MB full, and the OOM killer goes by the second number.
+
+So the warnings and `/owner status` report the container figure where Linux
+exposes it, and say how much of it is this process:
+
+```
+memory at 214MB of the 256MB limit (84%) — this process is 119MB of it;
+the other 95MB is other processes, /tmp or page cache
+```
+
+Off Linux, or with no cgroup, everything falls back to `rss`.
+
 ### Heap sizing
 
 V8 chooses its maximum heap from the **host's** physical memory. A cgroup limit

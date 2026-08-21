@@ -280,11 +280,17 @@ process.on('uncaughtException', (e) => bootLog('[UNCAUGHT EXCEPTION]', e));
     // these numbers.
     const mem = process.memoryUsage();
     const mb = (n) => Math.round(n / 1024 / 1024);
-    const limit = require('./src/core/cache').containerMemoryLimitMb();
+    const cgroup = require('./src/core/cache');
+    const limit = cgroup.containerMemoryLimitMb();
+    const used = cgroup.containerMemoryUsedMb();
     bootLog(
       `[SHUTDOWN] ${signal} received after ${Math.round((Date.now() - bot.startedAt) / 1000)}s — ` +
         `rss ${mb(mem.rss)}MB, heap ${mb(mem.heapUsed)}/${mb(mem.heapTotal)}MB, external ${mb(mem.external)}MB` +
-        (limit ? `, limit ${limit}MB` : ''),
+        // The container figure is the one a host stops a deployment over, and
+        // it is often well above this process's RSS: other processes, /tmp when
+        // it is a tmpfs, and page cache are all charged to the same limit.
+        (used !== null ? `, container ${used}MB` : '') +
+        (limit ? ` of ${limit}MB` : ''),
     );
     bootLog('[SHUTDOWN] flushing state...');
     try {

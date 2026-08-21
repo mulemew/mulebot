@@ -1049,3 +1049,54 @@ test('starboard will not mirror age-restricted content into a normal channel', a
   await handler(reaction(false), { id: 'u2' });
   assert.equal(posted.length, 2, 'ordinary content still posts normally');
 });
+
+test('container memory is read from the cgroup that sets the limit', () => {
+  const root = tempDir('cgu-root-');
+  const proc = tempDir('cgu-proc-');
+  const selfCgroup = path.join(proc, 'cgroup');
+
+  const write = (rel, value) => {
+    fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), String(value));
+  };
+
+  // systemd shape: unlimited at the root, capped on the unit. The usage that
+  // matters belongs to the same cgroup as the binding limit - reading the
+  // smallest limit from one place and whatever usage was readable somewhere
+  // else would answer with two unrelated numbers.
+  write('memory.max', 'max');
+  write('memory.current', 900 * 1024 * 1024);
+  write('system.slice/bot.service/memory.max', 256 * 1024 * 1024);
+  write('system.slice/bot.service/memory.current', 191 * 1024 * 1024);
+  fs.writeFileSync(selfCgroup, '0::/system.slice/bot.service\n');
+
+  const both = cache.cgroupMemory({ root, selfCgroup });
+  assert.equal(both.limitMb, 256);
+  assert.equal(both.usedMb, 191, 'the usage comes from the unit, not the machine');
+  assert.equal(cache.containerMemoryUsedMb({ root, selfCgroup }), 191);
+
+  // A tighter ancestor binds, and its usage is the one to report.
+  write('system.slice/memory.max', 128 * 1024 * 1024);
+  write('system.slice/memory.current', 100 * 1024 * 1024);
+  const tighter = cache.cgroupMemory({ root, selfCgroup });
+  assert.equal(tighter.limitMb, 128);
+  assert.equal(tighter.usedMb, 100, 'usage follows the binding limit');
+
+  // cgroup v1 keeps the same information under different names.
+  const v1root = tempDir('cgu-v1-');
+  fs.mkdirSync(path.join(v1root, 'memory'), { recursive: true });
+  fs.writeFileSync(path.join(v1root, 'memory', 'memory.limit_in_bytes'), String(512 * 1024 * 1024));
+  fs.writeFileSync(path.join(v1root, 'memory', 'memory.usage_in_bytes'), String(64 * 1024 * 1024));
+  const v1proc = path.join(tempDir('cgu-v1p-'), 'cgroup');
+  fs.writeFileSync(v1proc, '9:memory:/\n');
+  const v1 = cache.cgroupMemory({ root: v1root, selfCgroup: v1proc });
+  assert.equal(v1.limitMb, 512);
+  assert.equal(v1.usedMb, 64);
+
+  // Nothing readable: both null, so callers fall back to RSS rather than to a
+  // made-up number.
+  const bare = tempDir('cgu-bare-');
+  const bareProc = path.join(tempDir('cgu-barep-'), 'cgroup');
+  fs.writeFileSync(bareProc, '0::/\n');
+  assert.deepEqual(cache.cgroupMemory({ root: bare, selfCgroup: bareProc }), { limitMb: null, usedMb: null });
+});

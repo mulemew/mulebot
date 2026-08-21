@@ -187,10 +187,10 @@ function detectProfile() {
 }
 
 /**
- * Reads the cgroup memory limit, v2 then v1. Returns null when unlimited or
- * unreadable (any non-Linux host, for a start).
+ * Reads the cgroup memory limit and the usage charged against it, v2 then v1.
+ * Both are null when unlimited or unreadable, which covers every non-Linux host.
  */
-function containerMemoryLimitMb({ root = '/sys/fs/cgroup', selfCgroup = '/proc/self/cgroup' } = {}) {
+function cgroupMemory({ root = '/sys/fs/cgroup', selfCgroup = '/proc/self/cgroup' } = {}) {
   const fs = require('node:fs');
 
   const readLimit = (file) => {
@@ -208,13 +208,25 @@ function containerMemoryLimitMb({ root = '/sys/fs/cgroup', selfCgroup = '/proc/s
     return bytes;
   };
 
-  const files = [];
+  const readUsage = (file) => {
+    try {
+      const bytes = Number(fs.readFileSync(file, 'utf8').trim());
+      return Number.isFinite(bytes) && bytes >= 0 ? bytes : null;
+    } catch {
+      return null;
+    }
+  };
 
-  // A container gets its own cgroup namespace, so the limit sits at the root of
+  // Every cgroup directory this process belongs to, leaf first.
+  //
+  // A container gets its own cgroup namespace, so its limit sits at the root of
   // what it can see. A systemd service does not: it lives at
   // /system.slice/<unit>, and reading the root there answers for the whole
   // machine - which is why MemoryMax= used to go unnoticed entirely.
-  files.push(`${root}/memory.max`, `${root}/memory/memory.limit_in_bytes`);
+  const dirs = [
+    { dir: root, limit: 'memory.max', usage: 'memory.current' },
+    { dir: `${root}/memory`, limit: 'memory.limit_in_bytes', usage: 'memory.usage_in_bytes' },
+  ];
 
   try {
     for (const line of fs.readFileSync(selfCgroup, 'utf8').split('\n')) {
@@ -226,22 +238,65 @@ function containerMemoryLimitMb({ root = '/sys/fs/cgroup', selfCgroup = '/proc/s
       if (!cgPath || cgPath === '/') continue;
       if (controller !== '' && !controller.split(',').includes('memory')) continue;
 
-      // Walk leaf to root: a limit can be set on any ancestor, and the one that
+      // Leaf to root: a limit can be set on any ancestor, and the one that
       // actually binds is the smallest, so every level has to be considered.
       const segments = cgPath.split('/').filter(Boolean);
       for (let i = segments.length; i > 0; i--) {
         const prefix = segments.slice(0, i).join('/');
-        if (controller === '') files.push(`${root}/${prefix}/memory.max`);
-        else files.push(`${root}/memory/${prefix}/memory.limit_in_bytes`);
+        if (controller === '') dirs.push({ dir: `${root}/${prefix}`, limit: 'memory.max', usage: 'memory.current' });
+        else dirs.push({ dir: `${root}/memory/${prefix}`, limit: 'memory.limit_in_bytes', usage: 'memory.usage_in_bytes' });
       }
     }
   } catch {
     /* no /proc, e.g. not Linux */
   }
 
-  const limits = files.map(readLimit).filter((b) => b !== null);
-  if (!limits.length) return null;
-  return Math.round(Math.min(...limits) / 1024 / 1024);
+  // The binding limit is the tightest one, and the usage that matters is the
+  // usage of that same cgroup: read the pair together rather than the smallest
+  // limit from one place and whatever usage happened to be readable elsewhere.
+  let binding = null;
+  for (const candidate of dirs) {
+    const bytes = readLimit(`${candidate.dir}/${candidate.limit}`);
+    if (bytes === null) continue;
+    if (!binding || bytes < binding.bytes) binding = { bytes, dir: candidate.dir, usage: candidate.usage };
+  }
+
+  if (binding) {
+    const used = readUsage(`${binding.dir}/${binding.usage}`);
+    return {
+      limitMb: Math.round(binding.bytes / 1024 / 1024),
+      usedMb: used === null ? null : Math.round(used / 1024 / 1024),
+    };
+  }
+
+  // No limit anywhere. Usage from the most specific cgroup is still worth
+  // reporting where it exists; on a plain VPS there is nothing to read.
+  for (const candidate of dirs) {
+    const used = readUsage(`${candidate.dir}/${candidate.usage}`);
+    if (used !== null) return { limitMb: null, usedMb: Math.round(used / 1024 / 1024) };
+  }
+  return { limitMb: null, usedMb: null };
+}
+
+/**
+ * The memory limit this process is actually held to, in MB, or null.
+ * Thin wrapper: most callers only want the limit.
+ */
+function containerMemoryLimitMb(options) {
+  return cgroupMemory(options).limitMb;
+}
+
+/**
+ * What the kernel counts against that limit, in MB, or null.
+ *
+ * This is not the same number as process.memoryUsage().rss, and the difference
+ * is the whole point: the cgroup is charged for every process in the container,
+ * for tmpfs files (which /tmp usually is on a read-only host), and for page
+ * cache. A bot reporting 119 MB of RSS can be sitting in a container the kernel
+ * considers 250 MB full, and the OOM killer goes by the second number.
+ */
+function containerMemoryUsedMb(options) {
+  return cgroupMemory(options).usedMb;
 }
 
 /**
@@ -326,4 +381,12 @@ function snapshot(client) {
   };
 }
 
-module.exports = { build, snapshot, detectProfile, containerMemoryLimitMb, PROFILES };
+module.exports = {
+  build,
+  snapshot,
+  detectProfile,
+  containerMemoryLimitMb,
+  containerMemoryUsedMb,
+  cgroupMemory,
+  PROFILES,
+};

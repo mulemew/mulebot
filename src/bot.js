@@ -59,6 +59,13 @@ class Bot {
 
     /** Worst event-loop stall seen so far, in ms. Reported by /botinfo. */
     this.lagPeak = 0;
+
+    /**
+     * Memory the kernel charges the whole container, sampled on the lag tick.
+     * Null off Linux. Kept here so nothing else has to reach into core modules
+     * by relative path, and so reading it costs no syscall.
+     */
+    this.containerUsedMb = null;
   }
 
   // ---------- construction ----------
@@ -192,14 +199,27 @@ class Bot {
       const lag = now - lastSample - LAG_SAMPLE_MS;
       lastSample = now;
       this.lagPeak = Math.max(this.lagPeak, lag);
+      this.containerUsedMb = cacheProfiles.containerMemoryUsedMb();
 
       if (limitMb) {
         const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
-        const share = rssMb / limitMb;
+
+        // The kernel's own figure where it exists, because that is what the OOM
+        // killer goes by. It counts every process in the container, tmpfs files
+        // (/tmp usually is one on a read-only host) and page cache - none of
+        // which appear in this process's RSS. Judging by RSS alone means a bot
+        // reporting 47% can be in a container the kernel considers full.
+        const usedMb = this.containerUsedMb ?? rssMb;
+        const share = usedMb / limitMb;
         const band = share >= 0.9 ? 90 : share >= 0.8 ? 80 : share >= 0.7 ? 70 : 0;
+
         if (band > reportedBand) {
           reportedBand = band;
-          this.log.warn(`memory at ${rssMb}MB of the ${limitMb}MB limit (${Math.round(share * 100)}%)`);
+          const gap = usedMb - rssMb;
+          this.log.warn(
+            `memory at ${usedMb}MB of the ${limitMb}MB limit (${Math.round(share * 100)}%)` +
+              (gap > 8 ? ` — this process is ${rssMb}MB of it; the other ${gap}MB is other processes, /tmp or page cache` : ''),
+          );
         }
       }
       if (lag >= 1000) {
@@ -681,6 +701,9 @@ class Bot {
       cacheProfile: this.cacheProfile?.profile || 'unknown',
       caches: cacheProfiles.snapshot(this.client),
       memoryLimitMb: this.cacheProfile?.detectedLimitMb || null,
+      // What the kernel charges against that limit, which includes processes
+      // and tmpfs this one cannot see. null off Linux.
+      containerUsedMb: this.containerUsedMb,
       lagPeakMs: this.lagPeak,
     };
   }

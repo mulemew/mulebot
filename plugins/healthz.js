@@ -134,6 +134,10 @@ function body(result) {
     uptimeMs: bot?.readyAt ? Date.now() - bot.readyAt : 0,
     gatewayPingMs: bot?.client?.ws?.ping >= 0 ? Math.round(bot.client.ws.ping) : null,
     rssMb: Math.round(mem.rss / 1048576),
+    // What the kernel charges the whole container, where that is readable.
+    // Larger than rss whenever anything else in the container uses memory -
+    // another process, or /tmp when it is a tmpfs.
+    containerMb: bot?.containerUsedMb ?? null,
     heapUsedMb: Math.round(mem.heapUsed / 1048576),
     checks: result.checks,
   };
