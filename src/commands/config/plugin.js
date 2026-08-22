@@ -157,7 +157,7 @@ const plugin = {
                   `Drop a \`.js\` file into \`${path.relative(ctx.bot.config.rootDir, host.dir) || 'plugins'}/\` and run \`/plugin scan\`.`,
                   '',
                   'A plugin can be a plain standalone script — it just runs — or export `init(plugin)` for access to the bot.',
-                  'See `PLUGINS.md` for the full contract.',
+                  'See the README in that directory for the full contract.',
                 ].join('\n'),
               ),
             ],

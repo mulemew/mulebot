@@ -80,7 +80,7 @@ src/games/               10 games + the session manager
 src/events/              gateway event handlers
 src/commands/            slash commands, grouped by category
 
-data/plugins/            plugins, healthz.js included — see PLUGINS.md
+data/plugins/            plugins, healthz.js and their README
 test/                    74 tests: pure logic, plugins, runtime limits, gateway resilience
 ```
 
@@ -133,7 +133,7 @@ credential, since the owner-only check is the authentication.
 consequential as editing the bot's source. Set `PLUGINS_ENABLED=false` where that
 is not acceptable.
 
-📖 **Everything else is in [`PLUGINS.md`](PLUGINS.md)** — the
+📖 **Everything else is in [`data/plugins/README.md`](data/plugins/README.md)** — the
 context API, dependency handling, persistence modes and native addons.
 
 ---
@@ -386,7 +386,7 @@ Only if you deliberately pick a **web** service type does the platform health-ch
 an HTTP port and mark the deployment unhealthy when nothing answers. In that case
 nothing needs enabling: the bundled `healthz` plugin binds the injected `PORT`
 and answers 503 until the gateway is connected, then 200 for as long as the bot
-is actually working. With no PORT it binds nothing. See PLUGINS.md.
+is actually working. With no PORT it binds nothing. See data/plugins/README.md.
 
 Two things that do matter on every platform:
 

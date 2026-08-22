@@ -16,6 +16,7 @@ node_modules/
 !/data/plugins/
 /data/plugins/*
 !/data/plugins/healthz.js
+!/data/plugins/README.md
 /data-test/
 /data-mem/
 /data-vps/

@@ -1,12 +1,13 @@
 # Plugins
 
-Plugins live in **`<DATA_DIR>/plugins`**, not in the project tree: they are
-installed and deleted while the bot runs, so they belong with the rest of the
-state and one persistent volume covers everything. Drop a `.js` file there and
-it loads on the next start, or immediately with `/plugin scan`.
+This is the plugins directory. Drop a `.js` file here and it loads on the next
+start, or immediately with `/plugin scan`.
 
-`healthz.js` ships in the repository at that same path, so it is simply already
-there - no staging directory, no copy-on-first-run. It is an ordinary file:
+It sits inside `DATA_DIR` because plugins are state: they are installed and
+deleted while the bot runs, so they belong with everything else that has to
+survive a restart, and one persistent volume then covers the lot.
+
+`healthz.js` ships in the repository, right here, so it is simply already there - no staging directory, no copy-on-first-run. It is an ordinary file:
 editable, ignorable, and if you delete it, it stays deleted.
 
 ```
