@@ -1100,3 +1100,37 @@ test('container memory is read from the cgroup that sets the limit', () => {
   fs.writeFileSync(bareProc, '0::/\n');
   assert.deepEqual(cache.cgroupMemory({ root: bare, selfCgroup: bareProc }), { limitMb: null, usedMb: null });
 });
+
+test('/owner status can say where state actually lives', async () => {
+  const Bot = require('../src/bot');
+  const discord = require('discord.js');
+
+  const data = tempDir('paths-d-');
+  // A read-only plugins directory: a file where the directory should be.
+  const blocked = path.join(tempDir('paths-b-'), 'plugins');
+  fs.writeFileSync(blocked, 'not a directory');
+
+  process.env.DATA_DIR = data;
+  process.env.PLUGINS_DIR = blocked;
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const bot = new Bot({ token: 'x.y.z', rootDir: path.join(__dirname, '..'), discord });
+  await bot.init();
+
+  const { paths } = bot.snapshot();
+  assert.equal(paths.data, data, 'the data directory is reported');
+  assert.equal(paths.plugins, blocked, 'so is the configured plugins directory');
+
+  // The two are separate settings, and the remote registry belongs to the data
+  // directory - not to the plugins directory, despite being called "plugins".
+  assert.equal(paths.remotes, path.join(data, 'plugins', '_remote.json'));
+  assert.ok(paths.remotes.startsWith(data), 'the registry follows DATA_DIR, not PLUGINS_DIR');
+
+  // And where installs really land, which is the thing that decides whether one
+  // survives a restart.
+  assert.notEqual(paths.installs.dir, blocked, 'a read-only plugins directory is not where installs go');
+  assert.equal(paths.installs.temporary, true, 'and the caller is told that path is temporary');
+
+  await bot.shutdown();
+});

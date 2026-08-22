@@ -696,6 +696,16 @@ class Bot {
       intents: { ...this.intents },
       features: Object.keys(this.features),
       plugins: this.plugins ? this.plugins.stats() : { total: 0, loaded: 0, failed: 0, disabled: 0, watching: false },
+      // Where state lives. Every question about what survives a restart is a
+      // question about these, and they were reported nowhere.
+      paths: {
+        data: this.config.dataDir,
+        plugins: this.config.pluginsDir,
+        // Where installs actually land, which differs from the above when
+        // the plugins directory is read-only and they fell back to scratch.
+        installs: this.plugins ? this.plugins.writableDir() : null,
+        remotes: this.plugins ? this.plugins.remoteFile : null,
+      },
       logLines: logBuffer.items.length,
       logFile: fileStats(),
       cacheProfile: this.cacheProfile?.profile || 'unknown',

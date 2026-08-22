@@ -104,6 +104,23 @@ const owner = {
                     .join('\n'),
                 },
                 {
+                  name: 'Paths',
+                  value: [
+                    `Data: \`${s.paths.data}\``,
+                    `Plugins: \`${s.paths.plugins}\``,
+                    // Only worth a line when they differ: a read-only plugins
+                    // directory sends installs to a scratch path instead, and
+                    // that is the difference between an install surviving a
+                    // restart and quietly vanishing.
+                    s.paths.installs && s.paths.installs.dir !== s.paths.plugins
+                      ? `Installs land in: \`${s.paths.installs.dir}\`${s.paths.installs.temporary ? ' ⚠️ lost on restart' : ''}`
+                      : null,
+                    s.paths.remotes ? `Remote registry: \`${s.paths.remotes}\`` : null,
+                  ]
+                    .filter(Boolean)
+                    .join('\n'),
+                },
+                {
                   name: 'Gateway',
                   value: [
                     `Ping ${s.ping}ms`,
