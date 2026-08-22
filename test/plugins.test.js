@@ -565,6 +565,23 @@ test('installing from a URL supports disk, once and memory modes', async (t) => 
   assert.ok(remotes.mem, 'memory mode is remembered');
   assert.equal(remotes.once, undefined, 'once mode is not remembered');
 
+  // The registry is keyed by name, but the URL is what the person forgetting it
+  // has in front of them - they pasted it to install. Both have to work.
+  assert.equal(bot.plugins.forgetRemote('nothing-like-this'), false, 'an unknown key is a miss, not a throw');
+
+  // "kept" and "mem" came from the same URL, so the URL alone does not say which
+  // one to drop. Guessing would silently forget the wrong plugin.
+  assert.deepEqual(
+    bot.plugins.forgetRemote(url).sort(),
+    ['kept', 'mem'],
+    'an ambiguous URL names the candidates instead of picking one',
+  );
+  assert.ok(bot.plugins.readRemotes().kept && bot.plugins.readRemotes().mem, 'and forgets neither');
+
+  assert.equal(bot.plugins.forgetRemote('mem'), 'mem', 'the name is unambiguous and works');
+  assert.equal(bot.plugins.readRemotes().mem, undefined, 'and it is really gone');
+  assert.equal(bot.plugins.forgetRemote(url), 'kept', 'now only one is left, the URL is enough again');
+
   // Back to the real download() for the refusals.
   delete bot.plugins.download;
   await assert.rejects(() => bot.plugins.installFromUrl('file:///etc/passwd', { name: 'x' }), /https/);

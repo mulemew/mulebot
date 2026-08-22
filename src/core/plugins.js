@@ -1824,12 +1824,33 @@ class PluginHost {
   }
 
   /** Forgets a remote record, so a restart stops fetching it. */
-  forgetRemote(name) {
+  /**
+   * Forgets a remembered source, by plugin name or by the URL it came from.
+   *
+   * The registry is keyed by name, but the URL is what the person typing has in
+   * front of them - they just pasted it into /plugin install. Accepting only the
+   * name meant pasting the URL back got "not in the remembered list", which is
+   * true and useless.
+   *
+   * @returns the name forgotten, `false` if nothing matched, or the array of
+   *   candidate names when one URL was installed under several names - in which
+   *   case nothing is forgotten, because guessing which one they meant is worse
+   *   than asking.
+   */
+  forgetRemote(nameOrUrl) {
     const remotes = this.readRemotes();
-    if (!remotes[name]) return false;
-    delete remotes[name];
+    let key = remotes[nameOrUrl] ? nameOrUrl : null;
+
+    if (!key) {
+      const byUrl = Object.keys(remotes).filter((n) => remotes[n]?.url === nameOrUrl);
+      if (byUrl.length > 1) return byUrl;
+      key = byUrl[0] || null;
+    }
+
+    if (!key) return false;
+    delete remotes[key];
     this.writeRemotes(remotes);
-    return true;
+    return key;
   }
 
   /**

@@ -522,10 +522,23 @@ const plugin = {
       case 'remotes': {
         const forget = ctx.str('forget');
         if (forget) {
-          if (!host.forgetRemote(forget)) return ctx.fail(`\`${forget}\` is not in the remembered list.`);
+          const forgotten = host.forgetRemote(forget);
+          if (Array.isArray(forgotten)) {
+            return ctx.fail(
+              `That URL is remembered under ${humanList(forgotten.map((n) => `\`${n}\``))}. ` +
+                'Name the one you mean - nothing has been forgotten.',
+            );
+          }
+          if (!forgotten) {
+            return ctx.fail(
+              `Nothing remembered matches \`${truncate(forget, 90)}\`. This takes a plugin name or the URL it ` +
+                'came from, and `/plugin remotes` lists both. Plugins loaded from `PLUGINS_URLS` never appear ' +
+                'here - drop the URL from that variable instead.',
+            );
+          }
           return ctx.ok(
             'Forgotten',
-            `\`${forget}\` will not be fetched again on start. If it is running now, it stays until the next restart.`,
+            `\`${forgotten}\` will not be fetched again on start. If it is running now, it stays until the next restart.`,
             { ephemeral: true },
           );
         }
@@ -534,8 +547,10 @@ const plugin = {
         const entries = Object.entries(remotes);
         if (!entries.length) {
           return ctx.whisper(
-            'Nothing is remembered by URL. `/plugin install` with mode `memory` records its source here so it can ' +
-              'be fetched again on every start.',
+            'Nothing is remembered by URL. `/plugin install` records the source it fetched from, in every mode ' +
+              'except `once`, so the plugin survives a restart.\n\nPlugins loaded from `PLUGINS_URLS` are ' +
+              'deliberately absent: that variable is already the record, and copying it here would leave two ' +
+              'places to edit and one of them stale.',
           );
         }
 
