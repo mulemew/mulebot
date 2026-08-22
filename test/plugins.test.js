@@ -719,7 +719,7 @@ test('plugin switches are settable from the environment, not only the file', asy
     return host.manifest.disabled;
   };
 
-  const saved = [process.env.PLUGINS_DISABLED, process.env.PLUGINS_ALLOW];
+  const saved = [process.env.PLUGINS_DISABLED, process.env.PLUGINS_ALLOW, process.env.PLUGINS_SKIP];
   try {
     delete process.env.PLUGINS_DISABLED;
     delete process.env.PLUGINS_ALLOW;
@@ -736,7 +736,7 @@ test('plugin switches are settable from the environment, not only the file', asy
     process.env.PLUGINS_ALLOW = 'both';
     assert.deepEqual(read(), ['fromfile'], 'naming one in both means load it: the explicit yes wins');
   } finally {
-    for (const [k, v] of [['PLUGINS_DISABLED', saved[0]], ['PLUGINS_ALLOW', saved[1]]]) {
+    for (const [k, v] of [['PLUGINS_DISABLED', saved[0]], ['PLUGINS_ALLOW', saved[1]], ['PLUGINS_SKIP', saved[2]]]) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }

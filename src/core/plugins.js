@@ -588,12 +588,18 @@ class PluginHost {
         .map((n) => n.trim())
         .filter(Boolean);
 
-    const off = names(process.env.PLUGINS_DISABLED);
+    // PLUGINS_SKIP rather than PLUGINS_DISABLED: the latter sits one letter
+    // from PLUGINS_ENABLED, a boolean master switch, so it reads like its
+    // opposite while actually being a list of names - an easy way to write
+    // PLUGINS_DISABLED=true and wonder why nothing happened. The old name is
+    // still accepted so no existing deployment breaks.
+    const usedSkip = Boolean(process.env.PLUGINS_SKIP);
+    const off = names(process.env.PLUGINS_SKIP || process.env.PLUGINS_DISABLED);
     const on = names(process.env.PLUGINS_ALLOW);
 
     if (off.length) {
       this.manifest.disabled = [...new Set([...this.manifest.disabled, ...off])];
-      this.log.info(`PLUGINS_DISABLED skips: ${off.join(', ')}`);
+      this.log.info(`${usedSkip ? 'PLUGINS_SKIP' : 'PLUGINS_DISABLED'} skips: ${off.join(', ')}`);
     }
 
     // Applied second, so a name in both wins here: naming something explicitly

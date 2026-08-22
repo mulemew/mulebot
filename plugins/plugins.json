@@ -7,7 +7,7 @@
     "",
     "The same three are settable from the environment, which is the only way",
     "on a host where this file cannot be edited:",
-    "  PLUGINS_DISABLED=a,b     PLUGINS_ALLOW=c     PLUGINS_URLS=https://..."
+    "  PLUGINS_SKIP=a,b     PLUGINS_ALLOW=c     PLUGINS_URLS=https://..."
   ],
 
   "_why_healthz_is_disabled": [

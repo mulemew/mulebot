@@ -459,7 +459,7 @@ switches are environment variables:
 
 | | |
 |---|---|
-| `PLUGINS_DISABLED` | comma-separated names to skip |
+| `PLUGINS_SKIP` | comma-separated names to skip (`PLUGINS_DISABLED` is the old name, still accepted) |
 | `PLUGINS_ALLOW` | names to load even though `plugins.json` disables them |
 | `PLUGINS_ENABLED=false` | the master switch: load nothing at all |
 
