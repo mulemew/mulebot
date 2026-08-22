@@ -35,6 +35,7 @@ ENV NODE_ENV=production
 # only be right for one of them.
 
 VOLUME ["/app/data"]
+# Plugins live in /app/data/plugins, so that one volume covers them too.
 
 # No HEALTHCHECK, deliberately.
 #

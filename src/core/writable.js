@@ -21,7 +21,7 @@ const path = require('node:path');
  *             sign anything was wrong. So this only detects and reports; the
  *             operator decides whether ephemeral storage is acceptable.
  *
- *   PLUGINS_DIR holds code that was fetched from somewhere else and can be
+ *   The plugins directory holds code fetched from elsewhere, which can be
  *             fetched again. Falling back to a scratch directory is genuinely
  *             useful there — the install works, and it is reported as
  *             temporary so nobody is surprised when it is gone.

@@ -1,12 +1,20 @@
 # Plugins
 
-Drop a `.js` file in this directory. It loads on the next start, or immediately
-with `/plugin scan`.
+Plugins live in **`<DATA_DIR>/plugins`**, not in the project tree: they are
+installed and deleted while the bot runs, so they belong with the rest of the
+state and one persistent volume covers everything. Drop a `.js` file there and
+it loads on the next start, or immediately with `/plugin scan`.
+
+This directory in the repository holds the plugins that ship with the bot. They
+are copied into the data directory the first time it is created, and are
+ordinary files from then on - editable, ignorable, deletable, and nothing puts
+them back.
 
 ```
-plugins/
-  healthz.js        health endpoint for platforms that require one — DISABLED
-  plugins.json      optional: disable plugins, pass config, list URLs
+<DATA_DIR>/
+  plugins/          your plugins, plus plugins.json
+  plugin-store/     each plugin's own storage, and the remote registry
+  guilds.json ...   the bot's own data
 ```
 
 A fresh install opens no port and adds no commands: the one bundled plugin
@@ -249,7 +257,7 @@ arrived, so a changed file fails to load instead of running:
 PLUGINS_URLS=https://example.com/p.js#sha256=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 ```
 
-`memory` mode records only the URL, in `data/plugins/_remote.json`, and fetches
+`memory` mode records only the URL, in `data/plugin-store/_remote.json`, and fetches
 it again on every start — so the code exists on disk nowhere, and updating the
 plugin means updating the file it is served from.
 

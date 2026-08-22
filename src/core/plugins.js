@@ -195,10 +195,17 @@ class PluginContext {
     this._store = null;
   }
 
-  /** Lazily-created persistent storage, at data/plugins/<name>.json. */
+  /**
+   * Lazily-created persistent storage, at data/plugin-store/<name>.json.
+   *
+   * Deliberately not inside the plugins directory. That directory now holds the
+   * plugin *code*, and mixing a plugin's data into it means one unwritable path
+   * breaks both, a listing of plugins is half data files, and deleting a plugin
+   * is ambiguous about whether its data went too.
+   */
   get store() {
     if (!this._store) {
-      const dir = path.join(this.bot.config.dataDir, 'plugins');
+      const dir = path.join(this.bot.config.dataDir, 'plugin-store');
       fs.mkdirSync(dir, { recursive: true });
       this._store = new JsonStore(path.join(dir, `${this.name}.json`), {
         defaults: {},
@@ -700,6 +707,38 @@ class PluginHost {
   }
 
   /**
+   * Copies the plugins that ship with the bot into the plugins directory, once,
+   * when that directory is first created.
+   *
+   * They are defaults, not a separate class of plugin: after this they are
+   * ordinary files that can be edited, ignored or deleted like any other, and
+   * nothing puts them back. Copying rather than loading them from the source
+   * tree is what makes that true - a built-in you cannot delete is not a
+   * plugin, it is a feature wearing a plugin's clothes.
+   */
+  seedBuiltins() {
+    const source = this.bot.config.builtinPluginsDir;
+    if (!source || path.resolve(source) === path.resolve(this.dir)) return 0;
+
+    let copied = 0;
+    try {
+      for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+        fs.copyFileSync(path.join(source, entry.name), path.join(this.dir, entry.name));
+        copied++;
+      }
+    } catch (e) {
+      // Nothing to seed, or nowhere to put it. Neither stops the bot: an empty
+      // plugins directory is a perfectly good plugins directory.
+      this.log.debug(`no built-in plugins copied: ${e.message}`);
+      return copied;
+    }
+
+    if (copied) this.log.info(`copied ${copied} built-in plugin(s) into ${this.dir}`);
+    return copied;
+  }
+
+  /**
    * Files eligible to be plugins. Skipped: dotfiles, underscore-prefixed
    * helpers, anything under node_modules or a directory named _disabled, the
    * manifest itself, and .example files.
@@ -753,6 +792,7 @@ class PluginHost {
     if (!fs.existsSync(this.dir)) {
       fs.mkdirSync(this.dir, { recursive: true });
       this.log.debug(`created ${this.dir}`);
+      this.seedBuiltins();
     }
     this.readManifest();
 
@@ -1031,12 +1071,12 @@ class PluginHost {
    */
   makeRequire(file, context) {
     const real = Module.createRequire(file);
-    // Second resolver rooted at the bot itself. PLUGINS_DIR can point anywhere,
-    // and Node resolves node_modules by walking up from the importing file - so
-    // a plugin outside the project tree could not require('discord.js') without
-    // this fallback. Relative and absolute ids are never redirected, since those
-    // are the plugin's own files and a silent substitution would be worse than
-    // the error.
+    // Second resolver rooted at the bot itself. Plugins live under the data
+    // directory, outside the project tree, and Node resolves node_modules by
+    // walking up from the importing file - so without this fallback a plugin
+    // could not require('discord.js'). Relative and absolute ids are never
+    // redirected: those are the plugin's own files and a silent substitution
+    // would be worse than the error.
     const fallback = Module.createRequire(path.join(this.bot.config.rootDir, 'index.js'));
 
     // Third resolver, for packages /plugin npm had to install outside the
@@ -1385,7 +1425,7 @@ class PluginHost {
     const scratch = writable.scratchDir('plugins');
     this.log.warn(`${this.dir} is not writable, so installs go to ${scratch} instead`);
     this.log.warn('plugins installed there work now but do not survive a restart.');
-    this.log.warn('to keep them, point PLUGINS_DIR at a writable path or mount a volume.');
+    this.log.warn('to keep them, point DATA_DIR at a writable path or mount a volume.');
     this._writableDir = { dir: scratch, temporary: true };
     return this._writableDir;
   }
@@ -1394,7 +1434,9 @@ class PluginHost {
 
   /** The registry of plugins installed from a URL, kept in the data directory. */
   get remoteFile() {
-    return path.join(this.bot.config.dataDir, 'plugins', '_remote.json');
+    // Beside the plugin data rather than among the plugin files: this is a
+    // record of what to fetch, not something anyone drops into a directory.
+    return path.join(this.bot.config.dataDir, 'plugin-store', '_remote.json');
   }
 
   readRemotes() {

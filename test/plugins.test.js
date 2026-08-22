@@ -30,10 +30,18 @@ function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+/** A throwaway data directory with an empty plugins directory inside it. */
+function pluginsIn(prefix) {
+  const dir = path.join(tempDir(prefix), 'plugins');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Boots a bot pointed at a scratch plugins and data directory. */
 async function boot(pluginsDir) {
-  process.env.PLUGINS_DIR = pluginsDir;
-  process.env.DATA_DIR = tempDir('bot-data-');
+  // Plugins live inside the data directory now, so the fixture directory is
+  // <data>/plugins and DATA_DIR is its parent.
+  process.env.DATA_DIR = path.dirname(pluginsDir);
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
 
@@ -64,7 +72,7 @@ const portFree = (port) =>
 // ---------------------------------------------------------------------------
 
 test('a standalone script plugin runs, and unloading frees its port', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   const port = takePort();
 
   fs.writeFileSync(
@@ -111,7 +119,7 @@ test('a standalone script plugin runs, and unloading frees its port', async (t) 
 });
 
 test('a module plugin registers and unregisters everything it owns', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   fs.writeFileSync(
     path.join(dir, 'thing.js'),
@@ -162,7 +170,7 @@ test('a module plugin registers and unregisters everything it owns', async (t) =
 });
 
 test('a broken plugin fails alone and does not stop the others', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   fs.writeFileSync(path.join(dir, 'syntax.js'), 'this is not ( valid javascript');
   fs.writeFileSync(path.join(dir, 'throws.js'), 'throw new Error("deliberate failure");');
@@ -196,7 +204,7 @@ test('a broken plugin fails alone and does not stop the others', async (t) => {
 });
 
 test('a plugin that throws after opening a port still releases it', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   const port = takePort();
 
   fs.writeFileSync(
@@ -220,7 +228,7 @@ test('a plugin that throws after opening a port still releases it', async (t) =>
 });
 
 test('reload picks up edits to the file', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   const file = path.join(dir, 'versioned.js');
 
   fs.writeFileSync(file, 'module.exports = { version: "1.0.0", init(plugin) { plugin.store.set("v", 1); } };');
@@ -241,7 +249,7 @@ test('reload picks up edits to the file', async (t) => {
 });
 
 test('plugins.json disables plugins and supplies config', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   fs.writeFileSync(path.join(dir, 'skipped.js'), 'plugin.log.info("should never run");');
   fs.writeFileSync(path.join(dir, 'configured.js'), 'plugin.store.set("port", plugin.config.port);');
@@ -262,7 +270,7 @@ test('plugins.json disables plugins and supplies config', async (t) => {
 });
 
 test('discovery skips the files it is meant to skip', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   fs.writeFileSync(path.join(dir, '_helper.js'), 'throw new Error("underscore files must be skipped");');
   fs.writeFileSync(path.join(dir, '.hidden.js'), 'throw new Error("dotfiles must be skipped");');
@@ -283,7 +291,7 @@ test('discovery skips the files it is meant to skip', async (t) => {
 });
 
 test('a directory with index.js loads as a single plugin', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   const sub = path.join(dir, 'bundle');
   fs.mkdirSync(sub);
 
@@ -305,7 +313,7 @@ test('a directory with index.js loads as a single plugin', async (t) => {
 });
 
 test('a native addon that is not a Node addon gets a useful error', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   // A plain text file with a native extension: dlopen will refuse it, and the
   // point is that the message explains why rather than leaking a raw dlopen string.
   fs.writeFileSync(path.join(dir, 'fake.node'), 'not actually a shared library');
@@ -326,7 +334,7 @@ test('a native addon that is not a Node addon gets a useful error', async (t) =>
 });
 
 test('console inside a plugin is routed to the bot logger', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   fs.writeFileSync(path.join(dir, 'noisy.js'), 'console.log("hello from a plugin"); plugin.store.set("said", true);');
 
   const bot = await boot(dir);
@@ -342,7 +350,7 @@ test('console inside a plugin is routed to the bot logger', async (t) => {
 });
 
 test('watching picks up added, edited and deleted files', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   const port = takePort();
   process.env.PLUGIN_WATCH = 'true';
 
@@ -381,7 +389,7 @@ test('watching picks up added, edited and deleted files', async (t) => {
 });
 
 test('plugins are CommonJS, with a clear error for the usual mistakes', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   fs.writeFileSync(path.join(dir, 'esm-import.js'), `import fs from 'node:fs';`);
   fs.writeFileSync(path.join(dir, 'esm-export.js'), `export const x = 1;`);
@@ -420,7 +428,7 @@ test('plugins are CommonJS, with a clear error for the usual mistakes', async (t
 });
 
 test('directory plugins honour package.json main and metadata', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   const bundle = path.join(dir, 'bundle');
   fs.mkdirSync(path.join(bundle, 'src'), { recursive: true });
@@ -516,7 +524,7 @@ test('archives are read and extracted safely', () => {
 });
 
 test('installing from a URL supports disk, once and memory modes', async (t) => {
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
 
   const bot = await boot(dir);
   t.after(async () => {
@@ -571,7 +579,7 @@ test('archives support once mode, and refuse memory mode with a way forward', as
   // is what people usually mean. It used to fall through to "persist" silently,
   // so asking for a throwaway install quietly produced a permanent one.
   const zlib = require('node:zlib');
-  const dir = tempDir('bot-plugins-');
+  const dir = pluginsIn('bot-plugins-');
   const port = takePort();
 
   const tar = (files) => {
@@ -709,7 +717,7 @@ test('packages go somewhere writable when the project directory is not', () => {
 
 test('plugin switches are settable from the environment, not only the file', async () => {
   const { PluginHost } = require('../src/core/plugins');
-  const dir = tempDir('penv-');
+  const dir = pluginsIn('penv-');
   const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
   // The file's key is the same word as the environment variable, so it reads as
   // one setting with two places to put it rather than two settings.
@@ -791,7 +799,7 @@ test('plugin URLs can be configured, so a host with no disk still gets them', as
 
 test('a spawned child is reclaimed on unload without the plugin asking', async () => {
   const { PluginHost } = require('../src/core/plugins');
-  const dir = tempDir('autocp-');
+  const dir = pluginsIn('autocp-');
   const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
   const bot = {
     config: { rootDir: dir, dataDir: dir, pluginsDir: dir, saveIntervalMs: 1000 },
@@ -853,7 +861,7 @@ test('a spawned child is reclaimed on unload without the plugin asking', async (
 
 test('a tracked child process is killed on unload, not left running', async () => {
   const { PluginHost } = require('../src/core/plugins');
-  const dir = tempDir('cproc-');
+  const dir = pluginsIn('cproc-');
   const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
   const bot = {
     config: { rootDir: dir, dataDir: dir, pluginsDir: dir, saveIntervalMs: 1000 },
@@ -935,7 +943,7 @@ test('the installer refuses http, and checks a pinned sha256', async () => {
   const crypto = require('node:crypto');
   const { PluginHost } = require('../src/core/plugins');
 
-  const dir = tempDir('dl-');
+  const dir = pluginsIn('dl-');
   const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
   const host = new PluginHost({ config: { rootDir: dir, dataDir: dir, pluginsDir: dir }, log }, { dir, log });
 
@@ -969,7 +977,7 @@ test('the installer refuses http, and checks a pinned sha256', async () => {
 });
 
 test('healthz reports what the bot is actually doing, not that it is alive', async (t) => {
-  const dir = tempDir('hz-');
+  const dir = pluginsIn('hz-');
   const port = takePort();
 
   fs.copyFileSync(path.join(ROOT, 'plugins', 'healthz.js'), path.join(dir, 'healthz.js'));
@@ -1044,7 +1052,7 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
 
 test('an archive with a bundled dependency and a native addon loads as one plugin', async (t) => {
   const zlib = require('node:zlib');
-  const dir = tempDir('bundle-');
+  const dir = pluginsIn('bundle-');
 
   const tar = (files) => {
     const blocks = [];
@@ -1118,7 +1126,7 @@ test('an archive with a bundled dependency and a native addon loads as one plugi
 
 test('PLUGINS_URLS takes archives as well as scripts, and leaves nothing behind', async (t) => {
   const zlib = require('node:zlib');
-  const dir = tempDir('purl2-');
+  const dir = pluginsIn('purl2-');
 
   const tar = (files) => {
     const blocks = [];
@@ -1206,13 +1214,12 @@ test('PLUGINS_URLS takes archives as well as scripts, and leaves nothing behind'
 });
 
 test('a registry that cannot be written does not fail an install that worked', async (t) => {
-  const dir = tempDir('rec-');
+  const dir = pluginsIn('rec-');
   const data = tempDir('rec-d-');
 
-  // Block <DATA_DIR>/plugins by putting a file where the directory must go.
-  fs.writeFileSync(path.join(data, 'plugins'), 'not a directory');
+  // Block the registry's directory by putting a file where it must go.
+  fs.writeFileSync(path.join(data, 'plugin-store'), 'not a directory');
 
-  process.env.PLUGINS_DIR = dir;
   process.env.DATA_DIR = data;
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
@@ -1248,7 +1255,7 @@ test('a registry that cannot be written does not fail an install that worked', a
 });
 
 test('reloading an in-memory plugin fetches it again instead of losing it', async (t) => {
-  const dir = tempDir('refetch-');
+  const dir = pluginsIn('refetch-');
   const bot = await boot(dir);
   t.after(async () => {
     await bot.shutdown();
@@ -1296,7 +1303,8 @@ test('reloading an in-memory plugin fetches it again instead of losing it', asyn
   await bot.plugins.loadAll();
   assert.equal(bot.plugins.needsRefetch(bot.plugins.get('ondisk')), false);
   const before = downloads;
-  assert.equal((await bot.plugins.reload('ondisk')).ok, true);
+  const rl = await bot.plugins.reload('ondisk');
+  assert.equal(rl.ok, true, 'reload failed: ' + rl.error);
   assert.equal(downloads, before, 'reloading a file plugin downloads nothing');
 
   // And a plugin with neither a file nor a URL says so rather than pretending.

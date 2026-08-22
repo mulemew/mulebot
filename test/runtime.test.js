@@ -302,8 +302,7 @@ test('command registration targets the servers the bot is actually in', async ()
 
   for (const testCase of cases) {
     process.env.GUILD_ID = testCase.env;
-    process.env.PLUGINS_DIR = tempDir('reg-p-');
-    process.env.DATA_DIR = tempDir('reg-d-');
+      process.env.DATA_DIR = tempDir('reg-d-');
     process.env.LOG_LEVEL = 'silent';
     delete process.env.REGISTER_COMMANDS;
 
@@ -349,7 +348,6 @@ test('a stale global registration is cleared when registering per guild', async 
   const discord = require('discord.js');
 
   process.env.GUILD_ID = '';
-  process.env.PLUGINS_DIR = tempDir('stale-p-');
   process.env.DATA_DIR = tempDir('stale-d-');
   process.env.LOG_LEVEL = 'silent';
   delete process.env.REGISTER_COMMANDS;
@@ -400,7 +398,6 @@ test('a read-only data directory fails loudly instead of relocating', async () =
   fs.writeFileSync(blocked, 'a file where a directory is wanted');
 
   process.env.DATA_DIR = blocked;
-  process.env.PLUGINS_DIR = base;
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
 
@@ -426,8 +423,10 @@ test('a read-only plugins directory falls back, and says so', async () => {
   assert.equal(writable.check(base).ok, true, 'a normal directory is writable');
   assert.equal(writable.check(blocked).ok, false, 'a blocked path is not');
 
-  process.env.DATA_DIR = tempDir('ro2-d-');
-  process.env.PLUGINS_DIR = blocked;
+  // The plugins directory is DATA_DIR/plugins, so block exactly that path.
+  const dataRo = tempDir('ro2-d-');
+  fs.writeFileSync(path.join(dataRo, 'plugins'), 'not a directory');
+  process.env.DATA_DIR = dataRo;
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
 
@@ -463,7 +462,6 @@ test('the application owner is recognised without OWNER_IDS being set', async ()
   const discord = require('discord.js');
 
   process.env.OWNER_IDS = '';
-  process.env.PLUGINS_DIR = tempDir('own-p-');
   process.env.DATA_DIR = tempDir('own-d-');
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
@@ -488,7 +486,6 @@ test('a team-owned application makes every team member an owner', async () => {
   const discord = require('discord.js');
 
   process.env.OWNER_IDS = '999888777666555444';
-  process.env.PLUGINS_DIR = tempDir('own2-p-');
   process.env.DATA_DIR = tempDir('own2-d-');
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
@@ -515,7 +512,6 @@ test('a failed owner lookup degrades instead of throwing', async () => {
   const discord = require('discord.js');
 
   process.env.OWNER_IDS = '';
-  process.env.PLUGINS_DIR = tempDir('own3-p-');
   process.env.DATA_DIR = tempDir('own3-d-');
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
@@ -707,7 +703,6 @@ test('the event loop sampler records the worst stall it sees', async () => {
   const Bot = require('../src/bot');
   const discord = require('discord.js');
 
-  process.env.PLUGINS_DIR = tempDir('lag-p-');
   process.env.DATA_DIR = tempDir('lag-d-');
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
@@ -1106,12 +1101,12 @@ test('/owner status can say where state actually lives', async () => {
   const discord = require('discord.js');
 
   const data = tempDir('paths-d-');
-  // A read-only plugins directory: a file where the directory should be.
-  const blocked = path.join(tempDir('paths-b-'), 'plugins');
+  // The plugins directory lives inside the data directory; block that exact
+  // path with a file, so installs have to land somewhere else.
+  const blocked = path.join(data, 'plugins');
   fs.writeFileSync(blocked, 'not a directory');
 
   process.env.DATA_DIR = data;
-  process.env.PLUGINS_DIR = blocked;
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
 
@@ -1120,12 +1115,12 @@ test('/owner status can say where state actually lives', async () => {
 
   const { paths } = bot.snapshot();
   assert.equal(paths.data, data, 'the data directory is reported');
-  assert.equal(paths.plugins, blocked, 'so is the configured plugins directory');
+  assert.equal(paths.plugins, blocked, 'so is the plugins directory, which lives inside it');
 
-  // The two are separate settings, and the remote registry belongs to the data
+  // The remote registry belongs to the data directory
   // directory - not to the plugins directory, despite being called "plugins".
-  assert.equal(paths.remotes, path.join(data, 'plugins', '_remote.json'));
-  assert.ok(paths.remotes.startsWith(data), 'the registry follows DATA_DIR, not PLUGINS_DIR');
+  assert.equal(paths.remotes, path.join(data, 'plugin-store', '_remote.json'));
+  assert.ok(paths.remotes.startsWith(data), 'the registry lives with the plugin data, not among the plugin files');
 
   // And where installs really land, which is the thing that decides whether one
   // survives a restart.

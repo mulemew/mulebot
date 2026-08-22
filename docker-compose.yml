@@ -22,16 +22,13 @@ services:
     cpus: 1.0
 
     volumes:
-      # Guild settings, member records, cases, scheduled tasks. Back this up.
+      # Everything that must survive a restart: settings, member records,
+      # cases, scheduled tasks, and the plugins themselves - they live in
+      # data/plugins, so this one volume is the whole persistence story.
       - bot-data:/app/data
-      # Drop .js files in ./plugins on the host to add plugins without
-      # rebuilding. Writable, because /plugin install, upload and npm all write
-      # here - mounted read-only they fall back to a scratch directory and
-      # every install is lost on the next restart.
-      - ./plugins:/app/plugins
 
-    # Only needed if you enable the healthz plugin (PLUGINS_ALLOW=healthz) and
-    # want its endpoint reachable from outside. It follows PORT.
+    # Only needed if you want the healthz endpoint reachable from outside. It
+    # binds only when PORT is set, and follows it.
     # ports:
     #   - "127.0.0.1:3000:3000"
 

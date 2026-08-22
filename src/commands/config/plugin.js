@@ -369,7 +369,7 @@ const plugin = {
             mode === 'memory' ? '\n⚠️ Memory only — it disappears on the next restart.' : null,
             result.temporary
               ? '\n⚠️ The plugins directory is read-only, so this went to a temporary one. It works ' +
-                'now but is gone after a restart. Mount a volume or set `PLUGINS_DIR` to keep it.'
+                'now but is gone after a restart. Mount a volume or point `DATA_DIR` somewhere writable.'
               : null,
           ]
             .filter(Boolean)
@@ -408,7 +408,7 @@ const plugin = {
             notes[result.mode || 'persist'],
             result.temporary
               ? '⚠️ The plugins directory is read-only, so this went to a temporary one. It works ' +
-                'now but is gone after a restart. Mount a volume or set `PLUGINS_DIR` to keep it.'
+                'now but is gone after a restart. Mount a volume or point `DATA_DIR` somewhere writable.'
               : null,
             // Say either way. Silence here is what made a missing record
             // impossible to distinguish from one that was never attempted.

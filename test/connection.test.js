@@ -24,7 +24,6 @@ const ROOT = path.join(__dirname, '..');
 const tempDir = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 
 async function boot() {
-  process.env.PLUGINS_DIR = tempDir('conn-plugins-');
   process.env.DATA_DIR = tempDir('conn-data-');
   process.env.LOG_LEVEL = 'silent';
   process.env.REGISTER_COMMANDS = 'false';
@@ -38,7 +37,6 @@ async function boot() {
 /** Runs a scenario in a child process so its exit code can be observed. */
 function runScenario(scenario, { ready = true } = {}) {
   const script = `
-    process.env.PLUGINS_DIR = ${JSON.stringify(tempDir('conn-p-'))};
     process.env.DATA_DIR = ${JSON.stringify(tempDir('conn-d-'))};
     process.env.LOG_LEVEL = 'silent';
     process.env.REGISTER_COMMANDS = 'false';

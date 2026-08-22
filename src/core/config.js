@@ -63,9 +63,16 @@ function loadConfig({ rootDir, token }) {
     ? path.resolve(rootDir, process.env.DATA_DIR)
     : path.join(rootDir, 'data');
 
-  const pluginsDir = process.env.PLUGINS_DIR
-    ? path.resolve(rootDir, process.env.PLUGINS_DIR)
-    : path.join(rootDir, 'plugins');
+  // Plugins are state, not source. They are installed, replaced and deleted
+  // while the bot runs, so they belong with everything else that has to survive
+  // a restart - which is why there is no PLUGINS_DIR: point DATA_DIR somewhere
+  // persistent and the plugins go with it, one volume for the lot.
+  const pluginsDir = path.join(dataDir, 'plugins');
+
+  // Where the plugins that ship with the bot are copied from, the first time
+  // the directory above is created. After that they are ordinary files that
+  // can be edited or deleted like any other.
+  const builtinPluginsDir = path.join(rootDir, 'plugins');
 
   const ownerIds = snowflakes(process.env.OWNER_IDS || process.env.OWNER_ID);
 
@@ -74,6 +81,7 @@ function loadConfig({ rootDir, token }) {
     rootDir,
     dataDir,
     pluginsDir,
+    builtinPluginsDir,
 
     // Plugins run with the full privileges of this process - loading one is as
     // consequential as editing the bot's source. Set PLUGINS_ENABLED=false on a
