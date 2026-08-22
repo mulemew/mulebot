@@ -24,10 +24,14 @@ services:
     volumes:
       # Guild settings, member records, cases, scheduled tasks. Back this up.
       - bot-data:/app/data
-      # Drop .js files in ./plugins on the host to add plugins without rebuilding.
-      - ./plugins:/app/plugins:ro
+      # Drop .js files in ./plugins on the host to add plugins without
+      # rebuilding. Writable, because /plugin install, upload and npm all write
+      # here - mounted read-only they fall back to a scratch directory and
+      # every install is lost on the next restart.
+      - ./plugins:/app/plugins
 
-    # Only needed if you want the status endpoint reachable from outside.
+    # Only needed if you enable the healthz plugin (PLUGINS_ALLOW=healthz) and
+    # want its endpoint reachable from outside. It follows PORT.
     # ports:
     #   - "127.0.0.1:3000:3000"
 

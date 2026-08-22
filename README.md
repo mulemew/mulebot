@@ -114,9 +114,10 @@ Drop a `.js` file into `plugins/` and it loads. It can be a plain standalone
 script — no exports, no contract — or export `init(plugin)` for slash commands,
 buttons, gateway listeners, scheduled tasks and persistent storage.
 
-The two bundled plugins are **examples and ship disabled**, so a fresh install
-opens no port and adds no commands. Enable one with `/plugin load` or by editing
-`plugins/plugins.json`.
+One plugin is bundled, `healthz`, and it **ships disabled** — so a fresh install
+opens no port and adds no commands. It exists for hosts that restart a
+deployment when nothing listens on the port they inject; turn it on there with
+`PLUGINS_ALLOW=healthz`.
 
 ```js
 // plugins/ticker.js — a complete, working plugin
@@ -502,7 +503,7 @@ Common causes, in the order worth checking:
    period pays for the wake-up. Nothing in the bot can fix this.
 3. **A shared vCPU out of burst credit.**
 
-`/owner stats` reports the worst stall since boot. Anything approaching 3000 ms
+`/owner status` reports the worst stall since boot. Anything approaching 3000 ms
 there means commands will fail intermittently no matter what they do.
 
 ### Reading the memory numbers
