@@ -629,7 +629,7 @@ class PluginHost {
     // meaningful answer - it means nothing is ignored.
     if (Object.prototype.hasOwnProperty.call(process.env, 'PLUGINS_IGNORED')) {
       this.manifest.ignored = parseList(process.env.PLUGINS_IGNORED);
-      this.log.info(
+      this.log.debug(
         this.manifest.ignored.length
           ? `PLUGINS_IGNORED: ${this.manifest.ignored.join(', ')}`
           : 'PLUGINS_IGNORED is empty, so nothing is ignored',
@@ -769,7 +769,7 @@ class PluginHost {
 
     const found = this.discover();
     if (!found.length) {
-      this.log.info('no plugins found');
+      this.log.debug('no plugins found');
       return { loaded: 0, failed: 0, disabled: 0 };
     }
 
@@ -837,7 +837,7 @@ class PluginHost {
 
         plugin.state = 'loaded';
         plugin.loadedAt = Date.now();
-        log.info(`loaded from memory${entry.origin ? ` (${entry.origin})` : ''}`);
+        log.debug(`loaded from memory${entry.origin ? ` (${entry.origin})` : ''}`);
         return true;
       }
 
@@ -857,7 +857,7 @@ class PluginHost {
                 `Last output: ${result.output.slice(-400)}`,
             );
           }
-          log.info('dependencies installed');
+          log.debug('dependencies installed');
         } else {
           log.warn(
             `declares ${needs.missing.length} dependency(ies) that are not installed: ${needs.missing.join(', ')}`,
@@ -1236,12 +1236,12 @@ class PluginHost {
       return { ok: false, code: -1, output: `cannot prepare ${target.dir}: ${e.message}` };
     }
 
-    this.log.info(`installing npm package ${valid} into ${target.dir} (${target.why})`);
+    this.log.debug(`installing npm package ${valid} into ${target.dir} (${target.why})`);
     const result = await this.runNpm(
       ['install', valid, '--no-audit', '--no-fund', '--omit=dev', '--prefix', target.dir],
       target.dir,
     );
-    this.log.info(`npm install ${valid} exited ${result.code}`);
+    this.log.debug(`npm install ${valid} exited ${result.code}`);
     if (result.ok && target.temporary) {
       this.log.warn(`${valid} went to ${target.dir} and will be gone after a restart`);
     }
@@ -1662,7 +1662,7 @@ class PluginHost {
       fs.mkdirSync(target, { recursive: true });
 
       const { files, stripped } = archive.extract(buffer, target);
-      this.log.info(`extracted ${files.length} file(s) into plugins/${name}${stripped ? ` (stripped "${stripped}/")` : ''}`);
+      this.log.debug(`extracted ${files.length} file(s) into plugins/${name}${stripped ? ` (stripped "${stripped}/")` : ''}`);
 
       const resolved = PluginHost.resolveDirectory(target);
       if (!resolved) {
@@ -1682,7 +1682,7 @@ class PluginHost {
         // will be gone - which is why this is documented rather than silent.
         fs.rmSync(target, { recursive: true, force: true });
         if (loaded) loaded.ephemeral = true;
-        this.log.info(`removed plugins/${name}/ from disk; it runs until the next restart`);
+        this.log.debug(`removed plugins/${name}/ from disk; it runs until the next restart`);
         return {
           ok,
           name,
@@ -1745,7 +1745,7 @@ class PluginHost {
       // something without leaving it behind.
       fs.rmSync(file, { force: true });
       if (plugin) plugin.ephemeral = true;
-      this.log.info(`removed plugins/${name}.js from disk; it runs until the next restart`);
+      this.log.debug(`removed plugins/${name}.js from disk; it runs until the next restart`);
       return { ok, name, mode: 'once', error: plugin?.error?.message };
     }
 
@@ -1815,7 +1815,7 @@ class PluginHost {
     ]
       .filter(Boolean)
       .join(' + ');
-    this.log.info(`loaded ${restored} plugin(s) from URLs (${from})${failed ? `, ${failed} failed` : ''}`);
+    this.log.debug(`loaded ${restored} plugin(s) from URLs (${from})${failed ? `, ${failed} failed` : ''}`);
     return { restored, failed };
   }
 
@@ -1931,7 +1931,7 @@ class PluginHost {
       if (key.startsWith(dir + path.sep) || key === plugin.file) delete require.cache[key];
     }
 
-    this.log.info(`unloaded plugin "${name}"${problems.length ? ` with ${problems.length} problem(s)` : ''}`);
+    this.log.debug(`unloaded plugin "${name}"${problems.length ? ` with ${problems.length} problem(s)` : ''}`);
     return { ok: true, problems };
   }
 
