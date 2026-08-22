@@ -1,19 +1,24 @@
 {
   "_comment": [
     "Optional. Delete this file and everything still works with defaults.",
-    "'disabled' lists plugin names (the filename without .js) not to load.",
+    "'ignored' lists plugin names (the filename without .js) not to load.",
     "'config' is handed to each plugin as plugin.config.",
     "'urls' lists https URLs fetched at every boot.",
     "",
-    "The same three are settable from the environment, which is the only way",
+    "Each has an environment variable that REPLACES it, which is the only way",
     "on a host where this file cannot be edited:",
-    "  PLUGINS_IGNORED=a,b     PLUGINS_URLS=https://...",
+    "  PLUGINS_IGNORED=a,b        same as \"ignored\" below",
+    "  PLUGINS_URLS=https://...   added to \"urls\" below",
     "",
-    "Nothing ships disabled. healthz is bundled but binds nothing unless the",
-    "platform injects PORT, so it costs nothing to leave loaded."
+    "PLUGINS_IGNORED= (empty) or [] means nothing is ignored, so it can undo",
+    "what this file says. Deleting a URL from PLUGINS_URLS is how you stop",
+    "fetching it - there is no separate switch for that.",
+    "",
+    "Nothing ships ignored. healthz is bundled but binds nothing unless a port",
+    "is asked for, so it costs nothing to leave loaded."
   ],
 
-  "disabled": [],
+  "ignored": [],
 
   "config": {},
 

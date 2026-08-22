@@ -247,7 +247,7 @@ test('plugins.json disables plugins and supplies config', async (t) => {
   fs.writeFileSync(path.join(dir, 'configured.js'), 'plugin.store.set("port", plugin.config.port);');
   fs.writeFileSync(
     path.join(dir, 'plugins.json'),
-    JSON.stringify({ disabled: ['skipped'], config: { configured: { port: 8123 } } }),
+    JSON.stringify({ ignored: ['skipped'], config: { configured: { port: 8123 } } }),
   );
 
   const bot = await boot(dir);
@@ -711,12 +711,14 @@ test('plugin switches are settable from the environment, not only the file', asy
   const { PluginHost } = require('../src/core/plugins');
   const dir = tempDir('penv-');
   const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
-  fs.writeFileSync(path.join(dir, 'plugins.json'), JSON.stringify({ disabled: ['fromfile'], config: {} }));
+  // The file's key is the same word as the environment variable, so it reads as
+  // one setting with two places to put it rather than two settings.
+  fs.writeFileSync(path.join(dir, 'plugins.json'), JSON.stringify({ ignored: ['fromfile'], config: {} }));
 
   const read = () => {
     const host = new PluginHost({ config: { rootDir: dir, dataDir: dir, pluginsDir: dir } }, { dir, log });
     host.readManifest();
-    return host.manifest.disabled;
+    return host.manifest.ignored;
   };
 
   const saved = process.env.PLUGINS_IGNORED;
@@ -724,14 +726,27 @@ test('plugin switches are settable from the environment, not only the file', asy
     delete process.env.PLUGINS_IGNORED;
     assert.deepEqual(read(), ['fromfile'], 'the file still decides when nothing is set');
 
-    // One variable, one meaning. There is no second one for re-enabling,
-    // because nothing ships disabled: a plugin that should not run everywhere
-    // decides that itself, the way healthz binds only when PORT is set.
+    // It replaces the file's list rather than adding to it. A list you can only
+    // grow cannot re-enable anything, which is what forced a second variable to
+    // exist last time.
     process.env.PLUGINS_IGNORED = 'one, two';
-    assert.deepEqual(read(), ['fromfile', 'one', 'two'], 'the environment adds to the file, spaces trimmed');
+    assert.deepEqual(read(), ['one', 'two'], 'the environment replaces the file, spaces trimmed');
 
-    process.env.PLUGINS_IGNORED = 'one,one, two ,';
-    assert.deepEqual(read(), ['fromfile', 'one', 'two'], 'duplicates and blanks are dropped');
+    // So an empty value is a real answer: ignore nothing, whatever the file says.
+    process.env.PLUGINS_IGNORED = '';
+    assert.deepEqual(read(), [], 'empty un-ignores everything the file listed');
+
+    // Some platforms will not store an empty value at all, so [] says the same.
+    process.env.PLUGINS_IGNORED = '[]';
+    assert.deepEqual(read(), [], 'an empty JSON array means the same');
+
+    process.env.PLUGINS_IGNORED = '["x", "y"]';
+    assert.deepEqual(read(), ['x', 'y'], 'a JSON array is accepted');
+
+    // A stray bracket falls back to comma separation rather than silently
+    // turning the whole setting off.
+    process.env.PLUGINS_IGNORED = '[oops';
+    assert.deepEqual(read(), ['[oops'], 'malformed JSON is treated as a plain value');
   } finally {
     if (saved === undefined) delete process.env.PLUGINS_IGNORED;
     else process.env.PLUGINS_IGNORED = saved;

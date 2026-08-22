@@ -553,7 +553,7 @@ class PluginHost {
     this.commandsDirty = false;
     this.watcher = null;
     this.watchTimers = new Map();
-    this.manifest = { disabled: [], config: {}, urls: [] };
+    this.manifest = { ignored: [], config: {}, urls: [] };
   }
 
   // ---------- discovery ----------
@@ -573,7 +573,9 @@ class PluginHost {
       if (fs.existsSync(file)) {
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
         this.manifest = {
-          disabled: Array.isArray(parsed.disabled) ? parsed.disabled : [],
+          // Same word as the environment variable, so it is obvious that one
+          // overrides the other rather than combining with it.
+          ignored: Array.isArray(parsed.ignored) ? parsed.ignored : [],
           config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {},
           urls: Array.isArray(parsed.urls) ? parsed.urls : [],
         };
@@ -582,21 +584,48 @@ class PluginHost {
       this.log.warn(`plugins.json is unreadable, ignoring it: ${e.message}`);
     }
 
-    const names = (value) =>
-      String(value || '')
+    /**
+     * Reads a list from an environment variable.
+     *
+     * Comma separated is the common form, and there is no standard for lists in
+     * the environment - but comma separated cannot express "empty", and some
+     * platforms will not store an empty value at all. So a JSON array is
+     * accepted too, which makes `[]` an explicit way to say "none" on a
+     * platform that would otherwise drop the variable.
+     */
+    const parseList = (value) => {
+      const raw = String(value ?? '').trim();
+      if (!raw || raw === '[]') return [];
+      if (raw.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed.map((n) => String(n).trim()).filter(Boolean);
+        } catch {
+          // Fall through to comma separation rather than rejecting the whole
+          // value: a stray bracket should not silently disable the setting.
+        }
+      }
+      return raw
         .split(',')
         .map((n) => n.trim())
         .filter(Boolean);
+    };
+    const names = parseList;
 
-    // One list, one meaning. PLUGINS_ENABLED is the on/off switch for the whole
-    // plugin system; PLUGINS_IGNORED names the plugins not to load. There is no
-    // second variable to re-enable something, because nothing ships disabled
-    // any more - a plugin that should not run everywhere decides that for
-    // itself, the way healthz only binds when the platform injects a PORT.
-    const ignored = names(process.env.PLUGINS_IGNORED);
-    if (ignored.length) {
-      this.manifest.disabled = [...new Set([...this.manifest.disabled, ...ignored])];
-      this.log.info(`PLUGINS_IGNORED skips: ${ignored.join(', ')}`);
+    // PLUGINS_IGNORED *replaces* the file's list rather than adding to it.
+    //
+    // Adding was the mistake that made a second variable necessary last time:
+    // a list you can only grow cannot re-enable anything, so a host where
+    // plugins.json is read-only had no way to undo what the file said. Replacing
+    // covers both directions with one variable, and an empty value is a
+    // meaningful answer - it means nothing is ignored.
+    if (Object.prototype.hasOwnProperty.call(process.env, 'PLUGINS_IGNORED')) {
+      this.manifest.ignored = parseList(process.env.PLUGINS_IGNORED);
+      this.log.info(
+        this.manifest.ignored.length
+          ? `PLUGINS_IGNORED: ${this.manifest.ignored.join(', ')}`
+          : 'PLUGINS_IGNORED is empty, so nothing is ignored',
+      );
     }
 
     const urls = names(process.env.PLUGINS_URLS);
@@ -738,7 +767,7 @@ class PluginHost {
     let disabled = 0;
 
     for (const entry of found) {
-      if (this.manifest.disabled.includes(entry.name)) {
+      if (this.manifest.ignored.includes(entry.name)) {
         const plugin = new Plugin(entry);
         plugin.state = 'disabled';
         this.plugins.set(entry.name, plugin);
@@ -1928,7 +1957,7 @@ class PluginHost {
     const found = this.discover().filter((e) => !this.plugins.has(e.name));
     let loaded = 0;
     for (const entry of found) {
-      if (this.manifest.disabled.includes(entry.name)) continue;
+      if (this.manifest.ignored.includes(entry.name)) continue;
       if (await this.load(entry)) loaded++;
     }
     return { found: found.length, loaded };

@@ -391,10 +391,11 @@ Entirely optional.
 
 ```json
 {
-  "disabled": ["noisy"],
+  "ignored": ["noisy"],
   "config": {
-    "port": { "bind": "0.0.0.0" }
-  }
+    "healthz": { "host": "0.0.0.0" }
+  },
+  "urls": ["https://example.com/tool.js"]
 }
 ```
 
@@ -457,7 +458,7 @@ switches are environment variables:
 
 | | |
 |---|---|
-| `PLUGINS_IGNORED` | comma-separated names not to load |
+| `PLUGINS_IGNORED` | names not to load. **Replaces** `ignored` in `plugins.json`, so an empty value (or `[]`) un-ignores everything the file listed. Comma separated, or a JSON array. |
 | `PLUGINS_ENABLED=false` | the master switch: load nothing at all |
 
 A name in both lists loads. The boot log says which variable acted.
