@@ -206,7 +206,7 @@ from ready. A gateway drop is tolerated for `HEALTHZ_GATEWAY_GRACE_MS`
 
 | Setting | Default |
 |---|---|
-| `PORT` | 3000, and binding `0.0.0.0` when set |
+| `PORT` | no default — setting it is what makes the plugin bind, on `0.0.0.0` |
 | `HEALTHZ_PORT`, `HEALTHZ_HOST` | override either |
 | `HEALTHZ_GATEWAY_GRACE_MS` | `120000` |
 | `HEALTHZ_MAX_LAG_MS` | `3000`, Discord's interaction deadline |

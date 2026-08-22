@@ -32,8 +32,10 @@
  *
  * Environment, or `config.healthz` in plugins.json:
  *
- *   PORT                 the platform's port. Bound on 0.0.0.0 when set.
- *   HEALTHZ_PORT         override, for running it somewhere else
+ *   PORT                 the platform's port. Bound on 0.0.0.0 when set, and
+ *                        the only thing that makes this plugin bind at all -
+ *                        there is no default.
+ *   HEALTHZ_PORT         use a different port instead
  *   HEALTHZ_HOST         override the bind address
  *   HEALTHZ_GATEWAY_GRACE_MS   how long a disconnected gateway stays "ok"
  *                              (default 120000) - short enough to recover a
@@ -67,8 +69,10 @@ const log = typeof plugin !== 'undefined' ? plugin.log : console;
 // deployment when nothing listens on it - and that injection is the signal.
 // On a laptop, or a VPS, or a panel that injects nothing, this file loads and
 // then does nothing at all, which is why it no longer has to ship disabled.
-const asked = config.port || process.env.HEALTHZ_PORT || process.env.PORT;
-const PORT = num(asked, 3000);
+//
+// No default port. There is nothing sensible to fall back to: if nobody named
+// a port, nobody wants one served.
+const PORT = num(config.port || process.env.HEALTHZ_PORT || process.env.PORT, null);
 
 // 0.0.0.0 when the platform supplied the port, because the checker is outside
 // this container. Otherwise localhost, so a laptop does not quietly expose it.
@@ -177,7 +181,7 @@ server.on('error', (e) => {
 });
 
 // createServer is tracked by the plugin host, so unloading releases the port.
-if (asked) {
+if (PORT) {
   server.listen(PORT, HOST, () => {
     log.info(`health endpoint on http://${HOST}:${PORT}/healthz`);
   });
