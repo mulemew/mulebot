@@ -980,7 +980,7 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
   const dir = pluginsIn('hz-');
   const port = takePort();
 
-  fs.copyFileSync(path.join(ROOT, 'plugins', 'healthz.js'), path.join(dir, 'healthz.js'));
+  fs.copyFileSync(path.join(ROOT, 'data', 'plugins', 'healthz.js'), path.join(dir, 'healthz.js'));
 
   const saved = { port: process.env.PORT, grace: process.env.HEALTHZ_GATEWAY_GRACE_MS };
   // Nothing to enable: setting PORT is what makes healthz bind.

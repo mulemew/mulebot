@@ -5,10 +5,9 @@ installed and deleted while the bot runs, so they belong with the rest of the
 state and one persistent volume covers everything. Drop a `.js` file there and
 it loads on the next start, or immediately with `/plugin scan`.
 
-This directory in the repository holds the plugins that ship with the bot. They
-are copied into the data directory the first time it is created, and are
-ordinary files from then on - editable, ignorable, deletable, and nothing puts
-them back.
+`healthz.js` ships in the repository at that same path, so it is simply already
+there - no staging directory, no copy-on-first-run. It is an ordinary file:
+editable, ignorable, and if you delete it, it stays deleted.
 
 ```
 <DATA_DIR>/

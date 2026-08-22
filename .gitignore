@@ -8,7 +8,14 @@ node_modules/
 #
 # The leading slash matters: a bare "data/" also matches src/data/, which holds
 # the trivia bank, word lists and shop catalogue that the bot needs to run.
-/data/
+# Everything in it is runtime state - except the plugins that ship with the
+# bot, which belong at the path the bot actually reads them from. Ignoring the
+# contents and un-ignoring those is why there is no staging directory and no
+# copy-on-first-run: the file is simply already where it goes.
+/data/*
+!/data/plugins/
+/data/plugins/*
+!/data/plugins/healthz.js
 /data-test/
 /data-mem/
 /data-vps/

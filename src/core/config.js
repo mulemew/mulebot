@@ -69,10 +69,6 @@ function loadConfig({ rootDir, token }) {
   // persistent and the plugins go with it, one volume for the lot.
   const pluginsDir = path.join(dataDir, 'plugins');
 
-  // Where the plugins that ship with the bot are copied from, the first time
-  // the directory above is created. After that they are ordinary files that
-  // can be edited or deleted like any other.
-  const builtinPluginsDir = path.join(rootDir, 'plugins');
 
   const ownerIds = snowflakes(process.env.OWNER_IDS || process.env.OWNER_ID);
 
@@ -81,7 +77,6 @@ function loadConfig({ rootDir, token }) {
     rootDir,
     dataDir,
     pluginsDir,
-    builtinPluginsDir,
 
     // Plugins run with the full privileges of this process - loading one is as
     // consequential as editing the bot's source. Set PLUGINS_ENABLED=false on a

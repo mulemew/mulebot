@@ -23,6 +23,7 @@ RUN apk add --no-cache tini
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# This brings data/plugins/healthz.js with it, which is where the bot reads it.
 
 # Run unprivileged. The node image already provides uid 1000 "node".
 RUN mkdir -p /app/data && chown -R node:node /app

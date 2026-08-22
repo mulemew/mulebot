@@ -707,38 +707,6 @@ class PluginHost {
   }
 
   /**
-   * Copies the plugins that ship with the bot into the plugins directory, once,
-   * when that directory is first created.
-   *
-   * They are defaults, not a separate class of plugin: after this they are
-   * ordinary files that can be edited, ignored or deleted like any other, and
-   * nothing puts them back. Copying rather than loading them from the source
-   * tree is what makes that true - a built-in you cannot delete is not a
-   * plugin, it is a feature wearing a plugin's clothes.
-   */
-  seedBuiltins() {
-    const source = this.bot.config.builtinPluginsDir;
-    if (!source || path.resolve(source) === path.resolve(this.dir)) return 0;
-
-    let copied = 0;
-    try {
-      for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
-        fs.copyFileSync(path.join(source, entry.name), path.join(this.dir, entry.name));
-        copied++;
-      }
-    } catch (e) {
-      // Nothing to seed, or nowhere to put it. Neither stops the bot: an empty
-      // plugins directory is a perfectly good plugins directory.
-      this.log.debug(`no built-in plugins copied: ${e.message}`);
-      return copied;
-    }
-
-    if (copied) this.log.info(`copied ${copied} built-in plugin(s) into ${this.dir}`);
-    return copied;
-  }
-
-  /**
    * Files eligible to be plugins. Skipped: dotfiles, underscore-prefixed
    * helpers, anything under node_modules or a directory named _disabled, the
    * manifest itself, and .example files.
@@ -792,7 +760,6 @@ class PluginHost {
     if (!fs.existsSync(this.dir)) {
       fs.mkdirSync(this.dir, { recursive: true });
       this.log.debug(`created ${this.dir}`);
-      this.seedBuiltins();
     }
     this.readManifest();
 
