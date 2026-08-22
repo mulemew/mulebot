@@ -849,7 +849,7 @@ class PluginHost {
       const needs = PluginHost.checkDependencies(entry.file, entry.manifest);
       if (needs) {
         if (this.bot.config.pluginAutoInstall) {
-          log.info(`installing ${needs.missing.length} declared dependency(ies): ${needs.missing.join(', ')}`);
+          log.debug(`installing ${needs.missing.length} declared dependency(ies): ${needs.missing.join(', ')}`);
           const result = await this.installDependencies(needs.dir);
           if (!result.ok) {
             throw new Error(
@@ -908,7 +908,7 @@ class PluginHost {
         .filter(Boolean)
         .join(', ');
 
-      log.info(`loaded${summary ? ` — ${summary}` : ''}`);
+      log.debug(`loaded${summary ? ` — ${summary}` : ''}`);
       return true;
     } catch (e) {
       plugin.state = 'failed';
@@ -1207,7 +1207,7 @@ class PluginHost {
     const skipped = wanted.filter((s) => present(s));
     if (!missing.length) return { installed: [], skipped, ok: true };
 
-    this.log.info(`installing ${missing.length} package(s) named in PLUGINS_PACKAGES: ${missing.join(', ')}`);
+    this.log.debug(`installing ${missing.length} package(s) named in PLUGINS_PACKAGES: ${missing.join(', ')}`);
     const target = this.modulesDir;
     this.ensureNpmPrefix(target.dir);
 
@@ -2059,7 +2059,7 @@ class PluginHost {
           }, 400),
         );
       });
-      this.log.info(`watching ${this.dir} for changes`);
+      this.log.debug(`watching ${this.dir} for changes`);
       return true;
     } catch (e) {
       // recursive watch is unsupported on some platforms and filesystems.
@@ -2078,10 +2078,10 @@ class PluginHost {
       return;
     }
     if (known) {
-      this.log.info(`change detected in "${name}", reloading`);
+      this.log.debug(`change detected in "${name}", reloading`);
       await this.reload(name);
     } else {
-      this.log.info(`new plugin file "${name}", loading`);
+      this.log.debug(`new plugin file "${name}", loading`);
       await this.loadNew();
     }
     await this.syncCommands();
