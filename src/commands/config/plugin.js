@@ -254,6 +254,19 @@ const plugin = {
 
         await ctx.defer({ ephemeral: true });
 
+        // A plugin installed into memory has no file to load from - its path
+        // was never written - so fetch it from its URL instead of reporting a
+        // missing file it was never going to have.
+        if (host.needsRefetch(known)) {
+          const refetched = await host.refetch(name);
+          await host.syncCommands();
+          return refetched.ok
+            ? ctx.ok('Plugin loaded', `\`${name}\` was fetched again from \`${refetched.refetched}\`.`, {
+                ephemeral: true,
+              })
+            : ctx.fail(`Could not load \`${name}\`:\n${codeBlock(truncate(refetched.error, 900))}`);
+        }
+
         // Either a known-but-unloaded plugin, or something newly dropped in.
         const entry = known
           ? { name: known.name, file: known.file, kind: known.kind === 'native' ? 'native' : 'script' }

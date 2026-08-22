@@ -1236,3 +1236,62 @@ test('a registry that cannot be written does not fail an install that worked', a
   assert.deepEqual(bot.plugins.readRemotes(), {}, 'reading an absent registry is still safe');
 
 });
+
+test('reloading an in-memory plugin fetches it again instead of losing it', async (t) => {
+  const dir = tempDir('refetch-');
+  const bot = await boot(dir);
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  let downloads = 0;
+  let served = 1;
+  bot.plugins.download = async (url) => {
+    downloads++;
+    return {
+      buffer: Buffer.from(`plugin.store.set('v', ${served});`),
+      contentType: 'application/javascript',
+      url,
+      verified: false,
+    };
+  };
+
+  const url = 'https://example.invalid/m.js';
+  await bot.plugins.installFromUrl(url, { mode: 'memory' });
+  assert.equal(bot.plugins.get('m').context.store.get('v'), 1);
+
+  // A memory plugin's `file` is a path that was never written. Reload used to
+  // unload it, find no file, and delete it from the list - so a reload cost you
+  // the running plugin and gave nothing back.
+  assert.equal(fs.existsSync(bot.plugins.get('m').file), false, 'there is no file, by design');
+  assert.equal(bot.plugins.needsRefetch(bot.plugins.get('m')), true);
+
+  served = 2;
+  const reloaded = await bot.plugins.reload('m');
+  assert.equal(reloaded.ok, true, reloaded.error);
+  assert.equal(reloaded.refetched, url, 'it went back to the URL');
+  assert.equal(downloads, 2);
+  assert.equal(bot.plugins.get('m').state, 'loaded');
+  assert.equal(bot.plugins.get('m').context.store.get('v'), 2, 'and picked up what the URL serves now');
+
+  // Same for loading one that was unloaded: still no file, still fetchable.
+  await bot.plugins.unload('m');
+  const again = await bot.plugins.refetch('m');
+  assert.equal(again.ok, true, again.error);
+  assert.equal(bot.plugins.get('m').state, 'loaded');
+
+  // An ordinary plugin on disk is untouched by any of this.
+  fs.writeFileSync(path.join(dir, 'ondisk.js'), "plugin.store.set('k', 1);");
+  await bot.plugins.loadAll();
+  assert.equal(bot.plugins.needsRefetch(bot.plugins.get('ondisk')), false);
+  const before = downloads;
+  assert.equal((await bot.plugins.reload('ondisk')).ok, true);
+  assert.equal(downloads, before, 'reloading a file plugin downloads nothing');
+
+  // And a plugin with neither a file nor a URL says so rather than pretending.
+  bot.plugins.get('ondisk').file = path.join(dir, 'gone.js');
+  const orphan = await bot.plugins.reload('ondisk');
+  assert.equal(orphan.ok, false);
+  assert.match(orphan.error, /no file and no source URL/);
+});

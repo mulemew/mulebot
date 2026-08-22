@@ -1845,9 +1845,57 @@ class PluginHost {
   }
 
   /** Unload then load again, picking up edits to the file. */
+  /**
+   * The URL a plugin came from, if it came from one.
+   *
+   * Checked in the live plugin first and the registry second, because a plugin
+   * installed with mode "once" is recorded nowhere but still knows its origin.
+   */
+  sourceUrlFor(name) {
+    const plugin = this.plugins.get(name);
+    if (plugin?.origin) return plugin.origin;
+    return this.readRemotes()[name]?.url || null;
+  }
+
+  /**
+   * True when a plugin has no file to be reloaded from.
+   *
+   * A memory-mode plugin's `file` is a path that was never written: it exists
+   * so error messages and relative requires have somewhere to point. Reading it
+   * back is not a fallback, it is a guaranteed miss.
+   */
+  needsRefetch(plugin) {
+    if (!plugin) return false;
+    if (plugin.kind === 'memory') return true;
+    return !fs.existsSync(plugin.file);
+  }
+
+  /**
+   * Re-installs a plugin from the URL it came from.
+   * Used wherever a reload would otherwise look for a file that is not there.
+   */
+  async refetch(name) {
+    const plugin = this.plugins.get(name);
+    const url = this.sourceUrlFor(name);
+    if (!url) {
+      return { ok: false, error: `"${name}" has no file and no source URL to fetch it from` };
+    }
+
+    // The mode it was installed with, so a re-fetch does not quietly turn an
+    // in-memory plugin into one written to disk.
+    const mode = plugin?.kind === 'memory' || plugin?.ephemeral ? 'memory' : 'persist';
+    const result = await this.installFromUrl(url, { name, mode, remember: false });
+    return result.ok ? { ok: true, refetched: url } : { ok: false, error: result.error || 'the re-fetch failed' };
+  }
+
   async reload(name) {
     const plugin = this.plugins.get(name);
     if (!plugin) return { ok: false, error: `no plugin called "${name}"` };
+
+    // Nothing on disk to re-read: go back to the URL rather than unloading a
+    // working plugin and then deleting it for the crime of never having been a
+    // file. installFromUrl handles the unload itself.
+    if (this.needsRefetch(plugin)) return this.refetch(name);
 
     const entry = { name: plugin.name, file: plugin.file, kind: plugin.kind === 'native' ? 'native' : 'script' };
 
