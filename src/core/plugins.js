@@ -560,7 +560,7 @@ class PluginHost {
     this.commandsDirty = false;
     this.watcher = null;
     this.watchTimers = new Map();
-    this.manifest = { ignored: [], config: {}, urls: [] };
+    this.manifest = { ignored: [], config: {}, urls: [], packages: [] };
   }
 
   // ---------- discovery ----------
@@ -585,6 +585,7 @@ class PluginHost {
           ignored: Array.isArray(parsed.ignored) ? parsed.ignored : [],
           config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {},
           urls: Array.isArray(parsed.urls) ? parsed.urls : [],
+          packages: Array.isArray(parsed.packages) ? parsed.packages : [],
         };
       }
     } catch (e) {
@@ -634,6 +635,9 @@ class PluginHost {
           : 'PLUGINS_IGNORED is empty, so nothing is ignored',
       );
     }
+
+    const packages = parseList(process.env.PLUGINS_PACKAGES);
+    if (packages.length) this.manifest.packages = [...new Set([...this.manifest.packages, ...packages])];
 
     const urls = names(process.env.PLUGINS_URLS);
     if (urls.length) this.manifest.urls = [...new Set([...this.manifest.urls, ...urls])];
@@ -1167,6 +1171,59 @@ class PluginHost {
    * Installs an npm package into the bot's own node_modules, so every plugin
    * can require it. Shared by /plugin npm and the web panel.
    */
+  /**
+   * Installs the packages named in PLUGINS_PACKAGES, skipping any already there.
+   *
+   * A plugin fetched from PLUGINS_URLS is a single file with no package.json, so
+   * nothing declares what it needs and nothing can install it - on a host whose
+   * data directory is wiped between runs that means re-running /plugin npm by
+   * hand after every restart. This closes that loop: the packages are named in
+   * the same place the plugin is.
+   *
+   * The resolve check matters more than it looks. npm on a small host is
+   * expensive - measured at eighteen seconds and an eight second event-loop
+   * stall on a tenth of a CPU - so paying it on every boot would be worse than
+   * the problem. A container that already has the packages spawns nothing.
+   */
+  async ensurePackages(specs) {
+    const wanted = (specs || []).map((s) => PluginHost.validPackageSpec(s)).filter(Boolean);
+    if (!wanted.length) return { installed: [], skipped: [], ok: true };
+
+    const from = [this.modulesDir.dir, this.bot.config.rootDir].map((d) => path.join(d, 'node_modules'));
+    const present = (spec) => {
+      // "name@1.2.3" and "@scope/name@1.2.3" both reduce to the bare name: a
+      // version mismatch is not something this can see, and reinstalling on
+      // every boot to check would defeat the point.
+      const name = spec.startsWith('@') ? spec.split('@').slice(0, 2).join('@') : spec.split('@')[0];
+      try {
+        require.resolve(name, { paths: from });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const missing = wanted.filter((s) => !present(s));
+    const skipped = wanted.filter((s) => present(s));
+    if (!missing.length) return { installed: [], skipped, ok: true };
+
+    this.log.info(`installing ${missing.length} package(s) named in PLUGINS_PACKAGES: ${missing.join(', ')}`);
+    const target = this.modulesDir;
+    this.ensureNpmPrefix(target.dir);
+
+    // One npm call for all of them: each spawn costs seconds on a small host.
+    const result = await this.runNpm(
+      ['install', ...missing, '--no-audit', '--no-fund', '--omit=dev', '--prefix', target.dir],
+      target.dir,
+    );
+
+    if (!result.ok) {
+      this.log.error(`could not install ${missing.join(', ')}: ${result.output.slice(-300)}`);
+      return { installed: [], skipped, ok: false, error: result.output.slice(-300) };
+    }
+    return { installed: missing, skipped, ok: true };
+  }
+
   async installNpmPackage(spec) {
     const valid = PluginHost.validPackageSpec(spec);
     if (!valid) {

@@ -158,6 +158,12 @@ class Bot {
       log: this.log.child('plugins'),
     });
     if (this.config.pluginsEnabled) {
+      // Before loading anything: a plugin that needs a package must find it
+      // already there, and the packages are named in the same configuration
+      // the plugins are.
+      this.plugins.readManifest();
+      await this.plugins.ensurePackages(this.plugins.manifest.packages);
+
       await this.plugins.loadAll();
       if (this.config.pluginWatch) this.plugins.startWatching();
       // Memory-mode plugins leave nothing on disk, so they are fetched again

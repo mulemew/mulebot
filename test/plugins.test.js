@@ -1313,3 +1313,53 @@ test('reloading an in-memory plugin fetches it again instead of losing it', asyn
   assert.equal(orphan.ok, false);
   assert.match(orphan.error, /no file and no source URL/);
 });
+
+test('PLUGINS_PACKAGES installs what is missing and nothing else', async (t) => {
+  const { PluginHost } = require('../src/core/plugins');
+  const dir = pluginsIn('pkg-');
+  const log = { info() {}, warn() {}, debug() {}, error() {}, child: () => log };
+  const bot = { config: { rootDir: ROOT, dataDir: path.dirname(dir), pluginsDir: dir }, log };
+  const host = new PluginHost(bot, { dir, log });
+
+  let calls = 0;
+  let lastArgs = null;
+  host.runNpm = async (args) => {
+    calls++;
+    lastArgs = args;
+    return { ok: true, code: 0, output: 'stubbed' };
+  };
+
+  // npm on a small host costs seconds and stalls the event loop, so a container
+  // that already has the packages must spawn nothing at all.
+  const already = await host.ensurePackages(['discord.js']);
+  assert.deepEqual(already.installed, []);
+  assert.deepEqual(already.skipped, ['discord.js']);
+  assert.equal(calls, 0, 'a package already resolvable triggers no npm run');
+
+  // Missing ones go in a single call rather than one process each.
+  const mixed = await host.ensurePackages(['discord.js', 'left-pad', 'ms@2.1.3']);
+  assert.deepEqual(mixed.skipped, ['discord.js']);
+  assert.deepEqual(mixed.installed, ['left-pad', 'ms@2.1.3']);
+  assert.equal(calls, 1, 'one npm run for all of them');
+  assert.ok(lastArgs.includes('left-pad') && lastArgs.includes('ms@2.1.3'));
+
+  // The same grammar guard /plugin npm uses: nothing reaches a shell.
+  const rejected = await host.ensurePackages(['axios; rm -rf /', '../../etc/passwd']);
+  assert.deepEqual(rejected.installed, []);
+  assert.equal(calls, 1, 'an invalid spec is dropped, not passed to npm');
+
+  const saved = process.env.PLUGINS_PACKAGES;
+  t.after(() => {
+    if (saved === undefined) delete process.env.PLUGINS_PACKAGES;
+    else process.env.PLUGINS_PACKAGES = saved;
+  });
+
+  process.env.PLUGINS_PACKAGES = 'axios, ms';
+  host.readManifest();
+  assert.deepEqual(host.manifest.packages, ['axios', 'ms'], 'comma separated, spaces trimmed');
+
+  process.env.PLUGINS_PACKAGES = '["axios","ms"]';
+  host.manifest.packages = [];
+  host.readManifest();
+  assert.deepEqual(host.manifest.packages, ['axios', 'ms'], 'a JSON array works too');
+});

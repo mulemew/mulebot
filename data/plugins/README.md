@@ -466,6 +466,7 @@ switches are environment variables:
 
 | | |
 |---|---|
+| `PLUGINS_PACKAGES` | npm packages to install before plugins load, if not already present. Comma separated or a JSON array. |
 | `PLUGINS_IGNORED` | names not to load. **Replaces** `ignored` in `plugins.json`, so an empty value (or `[]`) un-ignores everything the file listed. Comma separated, or a JSON array. |
 | `PLUGINS_ENABLED=false` | the master switch: load nothing at all |
 
