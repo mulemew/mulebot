@@ -1396,10 +1396,9 @@ class PluginHost {
       fs.writeFileSync(this.remoteFile, JSON.stringify(map, null, 2));
       return null;
     } catch (e) {
-      const reason = `${e.code ? e.code + ': ' : ''}${e.message}`;
-      this.log.warn(`could not write ${this.remoteFile}: ${reason}`);
-      this.log.warn('the plugin is running, but its source is not recorded and will not be restored on restart');
-      return reason;
+      // Returned, not logged. The caller puts it in the reply, where the person
+      // who ran the command will actually read it.
+      return `${e.code ? e.code + ': ' : ''}${e.message}`;
     }
   }
 
