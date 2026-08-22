@@ -169,12 +169,10 @@ listens on the port they inject. `healthz.js` is bundled for that, and **ships
 disabled** because a Discord bot has no reason to serve a port. Turn it on where
 you need it:
 
-```ini
-PLUGINS_ALLOW=healthz
-```
-
-It binds `0.0.0.0:$PORT` when the platform injects one, localhost otherwise, and
-answers on `/healthz`, `/health` and `/`.
+It needs no enabling: set `PORT` — which most platforms inject for you — and it
+serves `/healthz`, `/health` and `/` there, on `0.0.0.0`. With no port asked for
+it loads and binds nothing, so it costs nothing on a machine that does not need
+one. `PLUGINS_IGNORED=healthz` removes it entirely.
 
 ### What it checks
 
@@ -459,8 +457,7 @@ switches are environment variables:
 
 | | |
 |---|---|
-| `PLUGINS_SKIP` | comma-separated names to skip (`PLUGINS_DISABLED` is the old name, still accepted) |
-| `PLUGINS_ALLOW` | names to load even though `plugins.json` disables them |
+| `PLUGINS_IGNORED` | comma-separated names not to load |
 | `PLUGINS_ENABLED=false` | the master switch: load nothing at all |
 
 A name in both lists loads. The boot log says which variable acted.

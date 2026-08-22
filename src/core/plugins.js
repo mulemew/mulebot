@@ -588,25 +588,15 @@ class PluginHost {
         .map((n) => n.trim())
         .filter(Boolean);
 
-    // PLUGINS_SKIP rather than PLUGINS_DISABLED: the latter sits one letter
-    // from PLUGINS_ENABLED, a boolean master switch, so it reads like its
-    // opposite while actually being a list of names - an easy way to write
-    // PLUGINS_DISABLED=true and wonder why nothing happened. The old name is
-    // still accepted so no existing deployment breaks.
-    const usedSkip = Boolean(process.env.PLUGINS_SKIP);
-    const off = names(process.env.PLUGINS_SKIP || process.env.PLUGINS_DISABLED);
-    const on = names(process.env.PLUGINS_ALLOW);
-
-    if (off.length) {
-      this.manifest.disabled = [...new Set([...this.manifest.disabled, ...off])];
-      this.log.info(`${usedSkip ? 'PLUGINS_SKIP' : 'PLUGINS_DISABLED'} skips: ${off.join(', ')}`);
-    }
-
-    // Applied second, so a name in both wins here: naming something explicitly
-    // is a more deliberate act than leaving a default in place.
-    if (on.length) {
-      this.manifest.disabled = this.manifest.disabled.filter((n) => !on.includes(n));
-      this.log.info(`PLUGINS_ALLOW loads: ${on.join(', ')}`);
+    // One list, one meaning. PLUGINS_ENABLED is the on/off switch for the whole
+    // plugin system; PLUGINS_IGNORED names the plugins not to load. There is no
+    // second variable to re-enable something, because nothing ships disabled
+    // any more - a plugin that should not run everywhere decides that for
+    // itself, the way healthz only binds when the platform injects a PORT.
+    const ignored = names(process.env.PLUGINS_IGNORED);
+    if (ignored.length) {
+      this.manifest.disabled = [...new Set([...this.manifest.disabled, ...ignored])];
+      this.log.info(`PLUGINS_IGNORED skips: ${ignored.join(', ')}`);
     }
 
     const urls = names(process.env.PLUGINS_URLS);

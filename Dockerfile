@@ -43,9 +43,9 @@ VOLUME ["/app/data"]
 # restarts unhealthy containers restarted it forever, with nothing in the log to
 # explain why. A check that cannot pass is worse than no check.
 #
-# A Discord bot needs no inbound port at all. If the platform requires one, set
-# PLUGINS_ALLOW=healthz: the bundled plugin ships disabled, binds the injected
-# PORT, and reports whether the gateway is actually connected.
+# A Discord bot needs no inbound port at all. Where the platform requires one,
+# the bundled healthz plugin binds the injected PORT and reports whether the
+# gateway is actually connected. With no PORT it binds nothing.
 #
 # A platform-level TCP check against PORT then passes. To also have a
 # container-level check, uncomment this - it follows PORT rather than assuming:

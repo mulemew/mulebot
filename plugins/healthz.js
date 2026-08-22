@@ -1,13 +1,12 @@
 /**
  * healthz — a health endpoint for platforms that insist on one.
  *
- * Ships DISABLED. A Discord bot has no reason to serve a port, and one that
- * appears on a fresh install is a port nobody asked for. Turn it on where the
- * platform needs it:
+ * Binds nothing unless a port was asked for. A Discord bot has no reason to
+ * serve one, and a port on a fresh install is a port nobody asked for - so this
+ * loads everywhere and acts only where PORT (or HEALTHZ_PORT) is set, which on
+ * a PaaS is exactly the signal that the platform wants a listener.
  *
- *     PLUGINS_ALLOW=healthz
- *
- * or by removing "healthz" from `disabled` in plugins.json.
+ * `PLUGINS_IGNORED=healthz` removes it entirely.
  *
  * ── What it actually checks ────────────────────────────────────────────────
  *
@@ -63,7 +62,13 @@ const config = typeof plugin !== 'undefined' ? plugin.config || {} : {};
 const bot = typeof plugin !== 'undefined' ? plugin.bot : null;
 const log = typeof plugin !== 'undefined' ? plugin.log : console;
 
-const PORT = num(config.port || process.env.HEALTHZ_PORT || process.env.PORT, 3000);
+// Nothing to do unless a port was asked for. A Discord bot needs no inbound
+// port, so this plugin exists only for hosts that inject PORT and restart the
+// deployment when nothing listens on it - and that injection is the signal.
+// On a laptop, or a VPS, or a panel that injects nothing, this file loads and
+// then does nothing at all, which is why it no longer has to ship disabled.
+const asked = config.port || process.env.HEALTHZ_PORT || process.env.PORT;
+const PORT = num(asked, 3000);
 
 // 0.0.0.0 when the platform supplied the port, because the checker is outside
 // this container. Otherwise localhost, so a laptop does not quietly expose it.
@@ -172,6 +177,8 @@ server.on('error', (e) => {
 });
 
 // createServer is tracked by the plugin host, so unloading releases the port.
-server.listen(PORT, HOST, () => {
-  log.info(`health endpoint on http://${HOST}:${PORT}/healthz`);
-});
+if (asked) {
+  server.listen(PORT, HOST, () => {
+    log.info(`health endpoint on http://${HOST}:${PORT}/healthz`);
+  });
+}

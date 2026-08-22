@@ -719,27 +719,22 @@ test('plugin switches are settable from the environment, not only the file', asy
     return host.manifest.disabled;
   };
 
-  const saved = [process.env.PLUGINS_DISABLED, process.env.PLUGINS_ALLOW, process.env.PLUGINS_SKIP];
+  const saved = process.env.PLUGINS_IGNORED;
   try {
-    delete process.env.PLUGINS_DISABLED;
-    delete process.env.PLUGINS_ALLOW;
+    delete process.env.PLUGINS_IGNORED;
     assert.deepEqual(read(), ['fromfile'], 'the file still decides when nothing is set');
 
-    process.env.PLUGINS_DISABLED = 'one, two';
+    // One variable, one meaning. There is no second one for re-enabling,
+    // because nothing ships disabled: a plugin that should not run everywhere
+    // decides that itself, the way healthz binds only when PORT is set.
+    process.env.PLUGINS_IGNORED = 'one, two';
     assert.deepEqual(read(), ['fromfile', 'one', 'two'], 'the environment adds to the file, spaces trimmed');
 
-    // The point of this: a container where plugins.json cannot be edited.
-    process.env.PLUGINS_ALLOW = 'fromfile';
-    assert.deepEqual(read(), ['one', 'two'], 'and can re-enable what the file disabled');
-
-    process.env.PLUGINS_DISABLED = 'both';
-    process.env.PLUGINS_ALLOW = 'both';
-    assert.deepEqual(read(), ['fromfile'], 'naming one in both means load it: the explicit yes wins');
+    process.env.PLUGINS_IGNORED = 'one,one, two ,';
+    assert.deepEqual(read(), ['fromfile', 'one', 'two'], 'duplicates and blanks are dropped');
   } finally {
-    for (const [k, v] of [['PLUGINS_DISABLED', saved[0]], ['PLUGINS_ALLOW', saved[1]], ['PLUGINS_SKIP', saved[2]]]) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
+    if (saved === undefined) delete process.env.PLUGINS_IGNORED;
+    else process.env.PLUGINS_IGNORED = saved;
   }
 });
 
@@ -964,8 +959,8 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
 
   fs.copyFileSync(path.join(ROOT, 'plugins', 'healthz.js'), path.join(dir, 'healthz.js'));
 
-  const saved = { allow: process.env.PLUGINS_ALLOW, port: process.env.PORT, grace: process.env.HEALTHZ_GATEWAY_GRACE_MS };
-  process.env.PLUGINS_ALLOW = 'healthz';
+  const saved = { port: process.env.PORT, grace: process.env.HEALTHZ_GATEWAY_GRACE_MS };
+  // Nothing to enable: setting PORT is what makes healthz bind.
   process.env.PORT = String(port);
   // Long enough that the checks between here and the expiry assertion cannot
   // outrun it, short enough to wait out in a test.
@@ -975,13 +970,13 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
   t.after(async () => {
     await bot.shutdown();
     fs.rmSync(dir, { recursive: true, force: true });
-    for (const [k, v] of [['PLUGINS_ALLOW', saved.allow], ['PORT', saved.port], ['HEALTHZ_GATEWAY_GRACE_MS', saved.grace]]) {
+    for (const [k, v] of [['PORT', saved.port], ['HEALTHZ_GATEWAY_GRACE_MS', saved.grace]]) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
   });
 
-  assert.equal(bot.plugins.get('healthz').state, 'loaded', 'PLUGINS_ALLOW overrode the shipped disable');
+  assert.equal(bot.plugins.get('healthz').state, 'loaded', 'nothing had to be enabled: PORT is the signal');
   await new Promise((r) => setTimeout(r, 250));
 
   const check = async () => {

@@ -114,10 +114,10 @@ Drop a `.js` file into `plugins/` and it loads. It can be a plain standalone
 script — no exports, no contract — or export `init(plugin)` for slash commands,
 buttons, gateway listeners, scheduled tasks and persistent storage.
 
-One plugin is bundled, `healthz`, and it **ships disabled** — so a fresh install
-opens no port and adds no commands. It exists for hosts that restart a
-deployment when nothing listens on the port they inject; turn it on there with
-`PLUGINS_ALLOW=healthz`.
+One plugin is bundled, `healthz`. It exists for hosts that restart a deployment
+when nothing listens on the port they inject, and it binds only when a port is
+actually asked for — so a fresh install opens no port and adds no commands, and
+on a platform that sets `PORT` it just works.
 
 ```js
 // plugins/ticker.js — a complete, working plugin
@@ -384,9 +384,9 @@ get right:
 
 Only if you deliberately pick a **web** service type does the platform health-check
 an HTTP port and mark the deployment unhealthy when nothing answers. In that case
-set `PLUGINS_ALLOW=healthz`. The bundled `healthz` plugin ships disabled; it
-binds the injected `PORT` and answers 503 until the gateway is connected, then
-200 for as long as the bot is actually working. See plugins/README.md.
+nothing needs enabling: the bundled `healthz` plugin binds the injected `PORT`
+and answers 503 until the gateway is connected, then 200 for as long as the bot
+is actually working. With no PORT it binds nothing. See plugins/README.md.
 
 Two things that do matter on every platform:
 
