@@ -1633,28 +1633,21 @@ class PluginHost {
       }
     })();
 
-    // "ephemeral" means "leave nothing behind", not "never touch the disk", and
-    // which of those is achievable depends on what arrived. A script really can
-    // run from a string; a bundle needs a directory for its relative require()s
-    // and its data files. So the choice is made here, once the bytes are in
-    // hand, rather than forcing the caller to know in advance what a URL serves.
+    // "memory" is a promise about what is left behind and what happens on the
+    // next start - nothing, and it comes back - not a statement about whether
+    // bytes ever touch a filesystem. A script can genuinely run from a string; a
+    // bundle needs a directory for its relative require()s and its data files,
+    // so it is extracted, loaded, and the directory removed. Same outcome, and
+    // the caller does not have to know which kind of file the URL serves.
+    //
+    // Refusing the archive instead, which is what this used to do, made the
+    // implementation detail the user's problem: retype the command with a
+    // different mode to get a worse version of what you asked for.
+    const memoryArchive = looksArchive && mode === 'memory';
     if (mode === 'ephemeral') mode = looksArchive ? 'once' : 'memory';
 
     // ---- archive ----
     if (looksArchive) {
-      if (mode === 'memory') {
-        // A bundle needs a real directory: relative require()s resolve against
-        // it, and files like an index.html are read from it by path. Faking that
-        // would mean a virtual filesystem, which is a lot of fragile machinery
-        // for a narrow case. "once" is the closest thing and is offered here so
-        // the answer is not simply "no".
-        throw new Error(
-          'an archive cannot run purely from memory: a bundle needs a real directory for relative ' +
-            'require() and for files it reads by path. Use mode "once" instead — it extracts, loads, ' +
-            'then deletes the files, so nothing is left on disk and it is gone after a restart. ' +
-            'Only a single .js file can run fully in memory.',
-        );
-      }
       const archive = require('./archive');
       const scratch = this.writableDir();
       const target = path.join(scratch.dir, name);
@@ -1675,7 +1668,7 @@ class PluginHost {
       const loaded = this.plugins.get(name);
       if (loaded) loaded.origin = finalUrl;
 
-      if (mode === 'once') {
+      if (mode === 'once' || memoryArchive) {
         // Extracted, loaded, and now removed. The code stays live in this
         // process; nothing survives a restart. Anything the plugin read during
         // load is already in memory, but a file it opens lazily at request time
@@ -1683,11 +1676,22 @@ class PluginHost {
         fs.rmSync(target, { recursive: true, force: true });
         if (loaded) loaded.ephemeral = true;
         this.log.debug(`removed plugins/${name}/ from disk; it runs until the next restart`);
+
+        // The difference between the two: "memory" is remembered and fetched
+        // again on the next start, "once" is not. Both leave nothing on disk.
+        let archiveRecordError = null;
+        if (memoryArchive && ok && opts.remember !== false) {
+          const remotes = this.readRemotes();
+          remotes[name] = { url: finalUrl, mode: 'memory', kind: 'archive', at: Date.now() };
+          archiveRecordError = this.writeRemotes(remotes);
+        }
+
         return {
           ok,
           name,
-          mode: 'once',
+          mode: memoryArchive ? 'memory' : 'once',
           files: files.length,
+          recordError: archiveRecordError,
           error: loaded?.error?.message,
           note: 'files deleted after loading',
         };

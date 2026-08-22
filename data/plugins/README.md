@@ -231,11 +231,17 @@ would do. Point an HTTP check at `/healthz` to get the real answer.
 Three persistence modes, because "try this plugin" and "install this plugin" are
 different things:
 
-| Mode | On disk? | After a restart |
+| Mode | Left on disk | After a restart |
 |---|---|---|
-| `persist` | written to `plugins/` | still there, loaded normally |
-| `once` | written, loaded, then **deleted** | gone |
-| `memory` | **never written** | re-fetched from its URL |
+| `persist` | yes | loaded from disk, not re-downloaded |
+| `memory` | no | **re-fetched from its URL** |
+| `once` | no | gone |
+
+The mode says what is left behind and what happens next start. It says nothing
+about the shape of the file: a `.zip` or `.tar.gz` honours all three the same
+way a single `.js` does. An archive cannot be compiled from a string, so in the
+two modes that leave nothing behind it is extracted, loaded, and its directory
+removed — same outcome, and not something the caller has to know about.
 
 ```js
 await bot.plugins.installFromUrl('https://example.com/p.js', { mode: 'memory' });
@@ -550,10 +556,10 @@ it again. What that means depends on what the URL serves:
 | `.js` | compiled from the download; the disk is never touched |
 | `.zip`, `.tar.gz` | extracted, loaded, then the directory is removed |
 
-A bundle cannot run purely from memory — its relative `require()`s and its data
-files need a real directory — so it is extracted to the first writable path,
-usually `/tmp`, for as long as it takes to load. Note the peak: an archive that
-expands to tens of MB costs that much memory on a host where `/tmp` is a tmpfs.
+The archive is extracted to the first writable path, usually `/tmp`, for as long
+as it takes to load, because its relative `require()`s and its data files need a
+real directory. Note the peak: an archive that expands to tens of MB costs that
+much memory on a host where `/tmp` is a tmpfs.
 
 The plugin name comes from the filename in the URL, with both extensions
 removed: `tools.tar.gz` becomes `tools`.

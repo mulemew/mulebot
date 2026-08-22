@@ -1,4 +1,5 @@
-# Small-host image. Final size is roughly 60 MB plus 27 MB of node_modules.
+# Small-host image. Roughly 295 MB, of which 229 MB is node:22-alpine itself
+# and 28 MB is the application and its one dependency.
 #
 #   docker build -t discord-bot .
 #   docker run -d --name bot --memory=256m --restart=unless-stopped \
@@ -16,14 +17,14 @@ RUN npm ci --omit=dev --no-audit --no-fund 2>/dev/null || npm install --omit=dev
 FROM node:22-alpine
 WORKDIR /app
 
-# wget is used by the healthcheck below and ships with busybox already.
 # tini reaps zombies and forwards SIGTERM, which is what lets the bot flush its
 # stores and release plugin-held ports on shutdown.
 RUN apk add --no-cache tini
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# This brings data/plugins/healthz.js with it, which is where the bot reads it.
+# .dockerignore keeps runtime state out but lets data/plugins/healthz.js through,
+# so the bundled plugin arrives at the path the bot reads it from.
 
 # Run unprivileged. The node image already provides uid 1000 "node".
 RUN mkdir -p /app/data && chown -R node:node /app

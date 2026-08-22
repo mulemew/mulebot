@@ -1,11 +1,20 @@
 node_modules
-data
-data-test
-data-mem
-logs
 .git
 .env
 *.log
 *.bak.*
 *.corrupt-*
 test
+logs
+data-test
+data-mem
+
+# Runtime state must not go into the image - except the plugins that ship with
+# the bot, which live at the path the bot reads them from. Same shape as
+# .gitignore, and for the same reason: a bare "data" here silently left
+# healthz.js out of every image built.
+data/*
+!data/plugins/
+data/plugins/*
+!data/plugins/healthz.js
+!data/plugins/README.md

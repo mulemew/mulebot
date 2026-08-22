@@ -572,7 +572,7 @@ test('installing from a URL supports disk, once and memory modes', async (t) => 
   await assert.rejects(() => bot.plugins.installFromUrl('nonsense', { name: 'x' }), /valid URL/);
 });
 
-test('archives support once mode, and refuse memory mode with a way forward', async (t) => {
+test('an archive honours every mode the same way a single file does', async (t) => {
   // A bundle needs a real directory: relative require() resolves against it, and
   // files like an index.html are read from it by path. So memory mode is refused
   // — but "once" extracts, loads, then deletes, which leaves nothing on disk and
@@ -632,10 +632,21 @@ test('archives support once mode, and refuse memory mode with a way forward', as
     verified: false,
   });
 
-  await assert.rejects(
-    () => bot.plugins.installFromUrl(url, { mode: 'memory', name: 'mem' }),
-    /cannot run purely from memory/,
-    'an archive must not pretend to run from memory',
+  // "memory" is a promise about what is left behind and what happens next
+  // start, not about whether bytes touch a filesystem. An archive cannot be
+  // compiled from a string - it needs a directory for its relative requires -
+  // so it is extracted, loaded, and the directory removed. Refusing it instead
+  // made an implementation detail the caller's problem.
+  const mem = await bot.plugins.installFromUrl(url, { mode: 'memory', name: 'mem' });
+  assert.equal(mem.ok, true, mem.error);
+  assert.equal(mem.mode, 'memory', 'it reports the mode that was asked for');
+  assert.equal(fs.existsSync(path.join(dir, 'mem')), false, 'nothing is left on disk');
+  assert.equal(bot.plugins.get('mem').state, 'loaded');
+  assert.equal(bot.plugins.get('mem').ephemeral, true);
+  assert.equal(
+    bot.plugins.readRemotes().mem?.url,
+    url,
+    'and it is remembered, so the next start fetches it again - which is the whole difference from "once"',
   );
 
   const once = await bot.plugins.installFromUrl(url, { mode: 'once', name: 'once' });
