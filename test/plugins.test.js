@@ -967,7 +967,9 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
   const saved = { allow: process.env.PLUGINS_ALLOW, port: process.env.PORT, grace: process.env.HEALTHZ_GATEWAY_GRACE_MS };
   process.env.PLUGINS_ALLOW = 'healthz';
   process.env.PORT = String(port);
-  process.env.HEALTHZ_GATEWAY_GRACE_MS = '50'; // so the grace can be waited out
+  // Long enough that the checks between here and the expiry assertion cannot
+  // outrun it, short enough to wait out in a test.
+  process.env.HEALTHZ_GATEWAY_GRACE_MS = '1000';
 
   const bot = await boot(dir);
   t.after(async () => {
@@ -1004,7 +1006,7 @@ test('healthz reports what the bot is actually doing, not that it is alive', asy
   r = await check();
   assert.equal(r.status, 200, 'a fresh disconnect is still healthy');
 
-  await new Promise((res) => setTimeout(res, 120));
+  await new Promise((res) => setTimeout(res, 1200));
   r = await check();
   assert.equal(r.status, 503, 'past the grace period it is not');
   assert.match(r.json.checks.gateway.detail, /disconnected for/);
@@ -1191,4 +1193,46 @@ test('PLUGINS_URLS takes archives as well as scripts, and leaves nothing behind'
   const scratch = bot.plugins.writableDir().dir;
   const leftover = fs.existsSync(scratch) ? fs.readdirSync(scratch) : [];
   assert.deepEqual(leftover, [], 'the extracted directory is removed after loading');
+});
+
+test('a registry that cannot be written does not fail an install that worked', async (t) => {
+  const dir = tempDir('rec-');
+  const data = tempDir('rec-d-');
+
+  // Block <DATA_DIR>/plugins by putting a file where the directory must go.
+  fs.writeFileSync(path.join(data, 'plugins'), 'not a directory');
+
+  process.env.PLUGINS_DIR = dir;
+  process.env.DATA_DIR = data;
+  process.env.LOG_LEVEL = 'silent';
+  process.env.REGISTER_COMMANDS = 'false';
+
+  const Bot = require('../src/bot');
+  const bot = new Bot({ token: 'x.y.z', rootDir: ROOT, discord });
+  await bot.init();
+  t.after(async () => {
+    await bot.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  bot.plugins.download = async (url) => ({
+    buffer: Buffer.from('plugin.log.info("ran");'),
+    contentType: 'application/javascript',
+    url,
+    verified: false,
+  });
+
+  // The download and the load both succeeded before the bookkeeping ran, so an
+  // exception here used to be reported as "Install failed" for an install that
+  // had in fact worked and was running - leaving no way to tell a failed record
+  // from one that was never attempted.
+  const result = await bot.plugins.installFromUrl('https://example.invalid/p.js', { mode: 'persist' });
+
+  assert.equal(result.ok, true, 'the install still succeeds');
+  assert.equal(bot.plugins.get('p').state, 'loaded', 'and the plugin is running');
+  assert.ok(result.recordError, 'but the caller is told the source was not recorded');
+  assert.match(result.recordError, /EEXIST|ENOTDIR|EACCES|EPERM/, 'with the reason attached');
+
+  assert.deepEqual(bot.plugins.readRemotes(), {}, 'reading an absent registry is still safe');
+
 });

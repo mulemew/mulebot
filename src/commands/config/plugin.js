@@ -397,6 +397,13 @@ const plugin = {
               ? '⚠️ The plugins directory is read-only, so this went to a temporary one. It works ' +
                 'now but is gone after a restart. Mount a volume or set `PLUGINS_DIR` to keep it.'
               : null,
+            // Say either way. Silence here is what made a missing record
+            // impossible to distinguish from one that was never attempted.
+            result.recordError
+              ? `⚠️ The source could not be recorded in \`${host.remoteFile}\`:\n` +
+                `\`${result.recordError}\`\n` +
+                'The plugin is running. It will not be restored automatically after a restart.'
+              : `Source recorded in \`${host.remoteFile}\`.`,
             result.files ? `Extracted ${result.files} file(s).` : null,
             owned?.commands.length ? `Registered ${owned.commands.map((c) => `/${c}`).join(', ')}.` : null,
           ]

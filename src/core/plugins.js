@@ -1380,9 +1380,27 @@ class PluginHost {
     }
   }
 
+  /**
+   * Records the remote registry. Returns why it failed, or null on success.
+   *
+   * This must not throw. It used to, and the consequence was the worst possible
+   * arrangement: the plugin had already downloaded and loaded by the time the
+   * bookkeeping ran, so a write failure surfaced as "Install failed" for an
+   * install that had in fact succeeded and was running. The registry is not the
+   * install - losing it costs the ability to re-fetch on restart, nothing more,
+   * and that is worth a warning rather than a lie.
+   */
   writeRemotes(map) {
-    fs.mkdirSync(path.dirname(this.remoteFile), { recursive: true });
-    fs.writeFileSync(this.remoteFile, JSON.stringify(map, null, 2));
+    try {
+      fs.mkdirSync(path.dirname(this.remoteFile), { recursive: true });
+      fs.writeFileSync(this.remoteFile, JSON.stringify(map, null, 2));
+      return null;
+    } catch (e) {
+      const reason = `${e.code ? e.code + ': ' : ''}${e.message}`;
+      this.log.warn(`could not write ${this.remoteFile}: ${reason}`);
+      this.log.warn('the plugin is running, but its source is not recorded and will not be restored on restart');
+      return reason;
+    }
   }
 
   /**
@@ -1585,10 +1603,11 @@ class PluginHost {
         };
       }
 
+      let recordError = null;
       if (ok && opts.remember !== false) {
         const remotes = this.readRemotes();
         remotes[name] = { url: finalUrl, mode: 'persist', kind: 'archive', at: Date.now() };
-        this.writeRemotes(remotes);
+        recordError = this.writeRemotes(remotes);
       }
       return {
         ok,
@@ -1596,6 +1615,7 @@ class PluginHost {
         mode: 'persist',
         files: files.length,
         temporary: scratch.temporary,
+        recordError,
         error: loaded?.error?.message,
       };
     }
@@ -1610,12 +1630,13 @@ class PluginHost {
       this.plugins.delete(name);
       const ok = await this.load({ name, file: virtualFile, kind: 'script', source, origin: finalUrl });
 
+      let recordError = null;
       if (ok && opts.remember !== false) {
         const remotes = this.readRemotes();
         remotes[name] = { url: finalUrl, mode: 'memory', kind: 'script', at: Date.now() };
-        this.writeRemotes(remotes);
+        recordError = this.writeRemotes(remotes);
       }
-      return { ok, name, mode: 'memory', error: this.plugins.get(name)?.error?.message };
+      return { ok, name, mode: 'memory', recordError, error: this.plugins.get(name)?.error?.message };
     }
 
     const scratch = this.writableDir();
@@ -1638,12 +1659,13 @@ class PluginHost {
       return { ok, name, mode: 'once', error: plugin?.error?.message };
     }
 
+    let recordError = null;
     if (ok && opts.remember !== false) {
       const remotes = this.readRemotes();
       remotes[name] = { url: finalUrl, mode: 'persist', kind: 'script', at: Date.now() };
-      this.writeRemotes(remotes);
+      recordError = this.writeRemotes(remotes);
     }
-    return { ok, name, mode: 'persist', temporary: scratch.temporary, error: plugin?.error?.message };
+    return { ok, name, mode: 'persist', temporary: scratch.temporary, recordError, error: plugin?.error?.message };
   }
 
   /**
